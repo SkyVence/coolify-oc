@@ -1,7 +1,9 @@
 # Publishes to npm when a version tag is pushed.
 #
-# Dormant until the repository has a remote and the NPM_TOKEN secret exists.
-# The first few releases are meant to be done by hand; automate once they are boring.
+# Auth is npm trusted publishing: the job exchanges its OIDC token for a
+# short-lived credential, so there is no NPM_TOKEN secret to create or rotate.
+# npm checks that claim against the trusted publisher configured on the package,
+# which must name this repository and this workflow file.
 name: publish
 
 on:
@@ -10,25 +12,11 @@ on:
       - "v*"
 
 jobs:
-  # Without NPM_TOKEN configured this workflow has nothing it can do, and a tag
-  # push should not leave a red X on the repository.
-  guard:
-    runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
-    steps:
-      - id: check
-        env:
-          TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: echo "enabled=${{ env.TOKEN != '' }}" >> "$GITHUB_OUTPUT"
-
   publish:
-    needs: guard
-    if: needs.guard.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required for npm provenance, which ties the tarball to this commit.
+      # The OIDC token that trusted publishing exchanges for a credential.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -47,9 +35,9 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # A Granular Access Token with "Read and write" on packages, stored as
-      # NPM_TOKEN. An automation token bypasses the 2FA prompt that would
-      # otherwise block a non-interactive publish.
+      # Trusted publishing needs npm 11.5.1 or newer, and Node 22 ships npm 10.
+      - run: npm install --global npm@latest
+
+      # No NODE_AUTH_TOKEN here on purpose: setting one would make npm use the
+      # token instead of the OIDC exchange.
       - run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
