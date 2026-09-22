@@ -5,10 +5,12 @@ import {
   abilityEntries,
   abilitySummary,
   abilityTone,
+  applicationGroups,
   appRowLabel,
   appRowState,
   appRowTone,
   markStartingUp,
+  projectGroupHeading,
   reconcileStartingUp,
   refreshSeconds,
   statusLight,
@@ -481,6 +483,61 @@ describe("abilitySummary", () => {
   it("omits abilities that are denied or unknown", () => {
     expect(abilitySummary(probes({ read: "granted", write: "denied", deploy: "unknown" }))).toBe("read")
     expect(abilitySummary(undefined)).toBe("none")
+  })
+})
+
+describe("applicationGroups", () => {
+  const app = (name: string) => ({ key: name, applicationUUID: `${name}_uuid`, name }) as any
+
+  it("keeps the single headingless group for one config, or none", () => {
+    expect(applicationGroups({ connected: true, apps: [app("web")] } as any)).toEqual([{ apps: [app("web")] }])
+    expect(applicationGroups(undefined)).toEqual([{ apps: [] }])
+  })
+
+  it("renders one headed section per config when several are present", () => {
+    const payload = {
+      connected: true,
+      apps: [app("root")],
+      projects: [
+        {
+          file: "/repo/coolify.json",
+          relativeFile: "coolify.json",
+          projectUUID: "proj_root",
+          configFile: "/repo/coolify.json",
+          apps: [app("root")],
+        },
+        {
+          file: "/repo/apps/web/coolify.json",
+          relativeFile: "apps/web/coolify.json",
+          configFile: "/repo/apps/web/coolify.json",
+          apps: [app("web")],
+        },
+      ],
+    } as any
+
+    const groups = applicationGroups(payload)
+    expect(groups).toHaveLength(2)
+    expect(groups[0]?.heading).toBe("proj_root")
+    expect(groups[1]?.heading).toBe("apps/web")
+    expect(groups[1]?.apps).toEqual([app("web")])
+  })
+})
+
+describe("projectGroupHeading", () => {
+  const project = (over: any) =>
+    ({ file: "/repo/coolify.json", relativeFile: "coolify.json", configFile: "/repo/coolify.json", apps: [], ...over }) as any
+
+  it("uses the repo-relative directory for a nested config", () => {
+    expect(projectGroupHeading(project({ relativeFile: "apps/web/coolify.json" }))).toBe("apps/web")
+  })
+
+  it("uses the projectUUID at the repository root", () => {
+    expect(projectGroupHeading(project({ projectUUID: "proj_1" }))).toBe("proj_1")
+    expect(projectGroupHeading(project({ relativeFile: ".coolify.json", projectUUID: "proj_2" }))).toBe("proj_2")
+  })
+
+  it("suppresses the heading at the root without a projectUUID", () => {
+    expect(projectGroupHeading(project({}))).toBeUndefined()
   })
 })
 

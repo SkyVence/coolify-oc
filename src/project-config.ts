@@ -1,4 +1,5 @@
-import { readFile, stat, writeFile } from "node:fs/promises"
+import type { Dirent } from "node:fs"
+import { readFile, readdir, stat, writeFile } from "node:fs/promises"
 import { dirname, join, relative, resolve as resolvePath } from "node:path"
 
 /**
@@ -123,6 +124,99 @@ async function hasGitEntry(directory: string): Promise<boolean> {
     }
   }
   return false
+}
+
+/** Directory levels below the root searched by `findAllProjectConfigs`. */
+const DEFAULT_MAX_CONFIG_DEPTH = 4
+
+/**
+ * Directories that never contain a committed config worth showing, or that are
+ * too expensive to walk. They can still hold a stray `coolify.json` (vendored
+ * sources, build output), so they are skipped explicitly rather than trusted.
+ */
+const IGNORED_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  ".next",
+  "coverage",
+  ".turbo",
+  "vendor",
+])
+
+export interface FindAllProjectConfigsOptions {
+  /** Directory levels below `root` to search. Defaults to 4. */
+  readonly maxDepth?: number
+}
+
+/**
+ * Walk DOWN from `root` and collect every `coolify.json` (and `.coolify.json`).
+ *
+ * Unlike `findProjectConfig`, which stops at the nearest config, this returns
+ * the whole tree so a repository can map several projects at once. The walk is
+ * depth-bounded and skips the usual build and dependency directories, so it
+ * stays cheap even in a big monorepo. Symlinked directories are never followed:
+ * `Dirent.isDirectory()` is false for a symlink, so the check below excludes
+ * them without a separate `stat`. Malformed files are skipped by reusing
+ * `parseProjectConfig` through `tryRead`, so one bad file cannot hide the rest.
+ *
+ * Results are sorted by absolute path, giving a stable order across runs.
+ */
+export async function findAllProjectConfigs(
+  root: string,
+  options: FindAllProjectConfigsOptions = {},
+): Promise<ProjectConfig[]> {
+  const start = resolvePath(root)
+  const maxDepth = options.maxDepth ?? DEFAULT_MAX_CONFIG_DEPTH
+  const found: ProjectConfig[] = []
+
+  const visit = async (directory: string, depth: number): Promise<void> => {
+    for (const name of CONFIG_FILENAMES) {
+      const config = await tryRead(join(directory, name))
+      if (config) found.push(config)
+    }
+    if (depth >= maxDepth) return
+
+    let entries: Dirent[]
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      // Unreadable directory: nothing more to discover below it.
+      return
+    }
+
+    const children = entries
+      .filter((entry) => entry.isDirectory() && !IGNORED_DIRECTORIES.has(entry.name))
+      .map((entry) => entry.name)
+      .sort()
+
+    for (const name of children) {
+      await visit(join(directory, name), depth + 1)
+    }
+  }
+
+  await visit(start, 0)
+
+  return found.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0))
+}
+
+/**
+ * Walk up from `from` to the directory holding the VCS marker.
+ *
+ * Falls back to `from` when there is no marker, so callers always get a
+ * directory to scan rather than the filesystem root.
+ */
+export async function findRepositoryRoot(from: string): Promise<string> {
+  const start = resolvePath(from)
+  let current = start
+
+  for (;;) {
+    if (await hasGitEntry(current)) return current
+    const parent = dirname(current)
+    if (parent === current) return start
+    current = parent
+  }
 }
 
 export function parseProjectConfig(file: string, raw: string): ProjectConfig {
