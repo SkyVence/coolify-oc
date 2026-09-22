@@ -590,37 +590,13 @@ export default Plugin.define({
           group: "Coolify",
           bind: false,
           palette: true,
-          slash: { name: "coolify", aliases: ["coolify-status", "coolify-setup"], arguments: true },
+          slash: { name: "coolify", arguments: true },
           run: async (input) => {
             await runCoolifyCommand(input)
           },
         },
-        {
-          id: "coolify.map",
-          title: "Coolify: link this project",
-          group: "Coolify",
-          bind: false,
-          palette: true,
-          slash: { name: "coolify-map" },
-          run: async () => {
-            if (!(await ensureConfigured())) return
-            await linkFlow(sessionDirectory())
-          },
-        },
-        {
-          id: "coolify.deploy",
-          title: "Coolify: deploy in a side chat",
-          group: "Coolify",
-          bind: false,
-          palette: true,
-          slash: { name: "coolify-deploy" },
-          run: async () => {
-            if (!(await ensureConfigured())) return
-            await deployInSideChat(undefined)
-          },
-        },
       ],
-      bindings: ["coolify.panel.open", "coolify.map", "coolify.deploy"],
+      bindings: ["coolify.panel.open"],
     })
 
     context.ui.slot({

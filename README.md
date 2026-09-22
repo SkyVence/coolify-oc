@@ -42,16 +42,11 @@ OpenCode 2.0.10 does not load plugins listed only in the global
 
 ## Use
 
-| Command | What it does |
-| --- | --- |
-| `/coolify` | Opens the configure picker. |
-| `/coolify <aspect>` | Goes straight to one aspect — see below. |
-| `/coolify-map` | Resolves this repository against Coolify and writes `coolify.json`. No model turn. |
-| `/coolify-deploy` | Deploys in a **background tab**, so the current conversation keeps running. |
-
-`/coolify` takes an argument rather than adding a command per setting, because
-every one of these already exists behind the picker — and a picker you have to
-click through is the thing a command should skip:
+There is **one** command. `/coolify` with no argument opens the configure
+picker; with an argument it goes straight to that aspect. An argument rather
+than a command per setting, because every one of these already exists behind the
+picker — and a picker you have to click through is the thing a command should
+skip:
 
 | Aspect | What it opens |
 | --- | --- |
@@ -95,11 +90,10 @@ Both appear in the model's skill guidance and can be loaded with the `skill`
 tool. The sidebar's deploy and map actions reference them rather than pasting
 instructions, so there is one copy of each.
 
-The `/coolify-map` command and the `coolify-link` skill are deliberately
-different tools: the command is the deterministic path, matching this directory
-against Coolify with no model turn, while the skill is the model-driven path for
-a monorepo or an ambiguous match. The command keeps its `/coolify-map` handle,
-but its palette label says `link` like everything else you read.
+`/coolify link` and the `coolify-link` skill are deliberately different tools:
+the aspect is the deterministic path, matching this directory against Coolify
+with no model turn, while the skill is the model-driven path for a monorepo or
+an ambiguous match. The sidebar's `link` action uses the skill.
 
 ## Configuration
 

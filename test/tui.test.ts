@@ -204,41 +204,35 @@ describe("tui plugin", () => {
     expect(harness.slots.map((slot: any) => slot.append).sort()).toEqual(["app", "sidebar.content"])
   })
 
-  it("registers exactly two commands and defers keymap until the app slot renders", async () => {
+  it("registers exactly one command and defers keymap until the app slot renders", async () => {
     const harness = mockContext()
     const plugin = await loadPlugin()
     await plugin.setup(harness.context as any)
 
     expect(harness.layers).toHaveLength(0)
-    expect(harness.commands().map((command: any) => command.id)).toEqual([
-      "coolify.panel.open",
-      "coolify.map",
-      "coolify.deploy",
-    ])
+    expect(harness.commands().map((command: any) => command.id)).toEqual(["coolify.panel.open"])
     expect(harness.layers).toHaveLength(1)
 
     const slashNames = harness
       .commands()
       .map((command: any) => command.slash?.name)
       .filter(Boolean)
-    expect(slashNames).toEqual(["coolify", "coolify-map", "coolify-deploy"])
+    expect(slashNames).toEqual(["coolify"])
   })
 
-  it("offers the project's applications from the /coolify command", async () => {
+  it("offers linking and instance setup from the picker", async () => {
     const harness = mockContext()
-    const rpcApplications = harness.context.client.rpc() as any
-    rpcApplications.applications = async () => ({
-      connected: true,
-      scope: "project",
-      apps: [{ key: "web", applicationUUID: "app_1", name: "lawn-web" }],
-    })
     const plugin = await loadPlugin()
     await plugin.setup(harness.context as any)
 
     await find(harness, "coolify.panel.open").run()
 
     expect(harness.selects).toHaveLength(1)
-    expect(harness.connectCalls).toHaveLength(0)
+    expect(harness.selects[0].options.map((option: any) => option.title)).toEqual([
+      "Link this project",
+      "Link with the model",
+      "Set up instance",
+    ])
   })
 
   it("runs a deploy in a background tab so the current chat is untouched", async () => {
@@ -246,7 +240,7 @@ describe("tui plugin", () => {
     const plugin = await loadPlugin()
     await plugin.setup(harness.context as any)
 
-    await find(harness, "coolify.deploy").run()
+    await find(harness, "coolify.panel.open").run("deploy")
 
     expect(harness.sessionCreates).toHaveLength(1)
     // The session's project, not the TUI's launch directory.
@@ -274,14 +268,14 @@ describe("tui plugin", () => {
     const plugin = await loadPlugin()
     await plugin.setup(harness.context as any)
 
-    await find(harness, "coolify.deploy").run()
+    await find(harness, "coolify.panel.open").run("deploy")
 
     // Declined, so nothing happened at all.
     expect(harness.sessionCreates).toHaveLength(0)
     expect(harness.sessionPrompts).toHaveLength(0)
 
     harness.setConfirm(true)
-    await find(harness, "coolify.deploy").run()
+    await find(harness, "coolify.panel.open").run("deploy")
 
     // Accepted: the prompt goes to the existing session, not a new one.
     expect(harness.sessionCreates).toHaveLength(0)
@@ -349,7 +343,7 @@ describe("tui plugin", () => {
   })
 })
 
-describe("mapping a project", () => {
+describe("linking a project", () => {
   it("resolves and writes coolify.json for the session directory, with no model turn", async () => {
     const harness = mockContext()
     const rpcResolve = harness.context.client.rpc() as any
@@ -366,7 +360,7 @@ describe("mapping a project", () => {
     const plugin = await loadPlugin()
     await plugin.setup(harness.context as any)
 
-    await find(harness, "coolify.map").run()
+    await find(harness, "coolify.panel.open").run("link")
 
     // No session was created and no prompt was injected: this path is model-free.
     expect(harness.sessionCreates).toHaveLength(0)
