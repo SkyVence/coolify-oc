@@ -598,7 +598,7 @@ export default Plugin.define({
           onAppActions={openAppActions}
           onAllApps={() => openAllApps(sessionDirectory())}
           onConfigure={() => void openConfigure(sessionDirectory())}
-          onMapFirst={() => linkFirst(sessionDirectory())}
+          onLinkFirst={() => linkFirst(sessionDirectory())}
           onReady={(controls) => {
             sidebarControls = controls
           }}
@@ -621,7 +621,7 @@ function CoolifySidebar(props: {
   onAppActions: (app: AppStatusPayload) => Promise<void>
   onAllApps: () => Promise<void>
   onConfigure: () => void
-  onMapFirst: () => Promise<void>
+  onLinkFirst: () => Promise<void>
   onReady: (controls: SidebarControls) => void
 }) {
   const context = usePlugin()
@@ -859,7 +859,7 @@ function CoolifySidebar(props: {
                     fg={theme().feedback.info?.base ?? theme().base}
                     wrapMode="none"
                     flexShrink={0}
-                    onMouseUp={() => void props.onMapFirst()}
+                    onMouseUp={() => void props.onLinkFirst()}
                   >
                     link
                   </text>
