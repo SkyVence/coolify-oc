@@ -1,7 +1,7 @@
 # Publishes to npm when a version tag is pushed.
 #
 # Dormant until the repository has a remote and the NPM_TOKEN secret exists.
-# See RELEASING.md — the first few releases are meant to be done by hand.
+# The first few releases are meant to be done by hand; automate once they are boring.
 name: publish
 
 on:
