@@ -4,6 +4,7 @@ import {
   STARTING_TIMEOUT_MS,
   abilityEntries,
   abilitySummary,
+  accessLevel,
   abilityTone,
   applicationGroups,
   appRowLabel,
@@ -339,6 +340,28 @@ describe("mapping a project", () => {
     expect(typeof sidebar?.render).toBe("function")
     expect(harness.sessionCreates).toHaveLength(0)
     expect(harness.sessionPrompts).toHaveLength(0)
+  })
+})
+
+describe("accessLevel", () => {
+  const probes = (statuses: Record<string, string>) =>
+    ({
+      connected: true,
+      probes: Object.fromEntries(Object.entries(statuses).map(([key, status]) => [key, { status, detail: "" }])),
+    }) as any
+
+  it("steps from none to full as abilities are granted", () => {
+    expect(accessLevel(probes({}))).toBe(0)
+    expect(accessLevel(probes({ read: "granted" }))).toBe(1)
+    expect(accessLevel(probes({ read: "granted", write: "granted", deploy: "granted" }))).toBe(3)
+    expect(
+      accessLevel(probes({ read: "granted", write: "granted", deploy: "granted", "read:sensitive": "granted" })),
+    ).toBe(4)
+  })
+
+  it("counts only granted abilities, not denied or unknown ones", () => {
+    expect(accessLevel(probes({ read: "granted", write: "denied", deploy: "unknown" }))).toBe(1)
+    expect(accessLevel(undefined)).toBe(0)
   })
 })
 

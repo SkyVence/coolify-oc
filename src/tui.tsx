@@ -44,6 +44,8 @@ export type LineTone = RuntimeTone | "muted"
 interface SidebarControls {
   readonly refresh: () => void
   readonly markStarting: (applicationUUID: string) => void
+  /** Drives the sidebar's loading indicator during a show-all fetch. */
+  readonly setBusy: (value: boolean) => void
 }
 
 const DEPLOY_PROMPT = `Set up and deploy this project on Coolify, using the \`coolify\` tools.
@@ -101,6 +103,11 @@ export default Plugin.define({
      * server-side, so the client cannot ask itself to re-read.
      */
     let sidebarControls: SidebarControls | undefined
+    /**
+     * "Show all" gets clicked repeatedly, and the project list changes far less
+     * often than the mapped one, so a short cache avoids a round trip per click.
+     */
+    let allAppsCache: { at: number; directory: string | undefined; apps: readonly AppStatusPayload[] } | undefined
 
     const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "info") =>
       context.ui.toast.show({ message, variant })
@@ -427,14 +434,27 @@ export default Plugin.define({
      * or an app is not mapped to this repository yet.
      */
     async function openAllApps(directory: string | undefined): Promise<void> {
-      let data: ApplicationsPayload
+      const ALL_APPS_TTL_MS = 10_000
+      let apps: readonly AppStatusPayload[]
+
+      sidebarControls?.setBusy(true)
       try {
-        data = (await rpc.applications({ scope: "project", directory })) as ApplicationsPayload
+        const cached =
+          allAppsCache && allAppsCache.directory === directory && Date.now() - allAppsCache.at < ALL_APPS_TTL_MS
+        if (cached) {
+          apps = allAppsCache!.apps
+        } else {
+          const data = (await rpc.applications({ scope: "project", directory })) as ApplicationsPayload
+          apps = data.apps ?? []
+          allAppsCache = { at: Date.now(), directory, apps }
+        }
       } catch (cause) {
         toast(`Could not list applications: ${message(cause)}`, "error")
         return
+      } finally {
+        sidebarControls?.setBusy(false)
       }
-      const apps = data.apps ?? []
+
       if (apps.length === 0) {
         toast("No applications in this project.", "warning")
         return
@@ -560,6 +580,20 @@ function CoolifySidebar(props: {
 
   // `rows` feeds the countdown's active-deployment check; grouping only
   // affects what is drawn, not when the sidebar refreshes.
+  /**
+   * Five steps from no access to full access. Reds and greens come from the
+   * theme so they match every theme; the orange and lime in between are fixed,
+   * because the theme only names three feedback levels.
+   */
+  const accessColour = (): string =>
+    [
+      theme().feedback.error.base,
+      "#fb923c",
+      theme().feedback.warning.base,
+      "#a3e635",
+      theme().feedback.success.base,
+    ][accessLevel(data()?.capabilities)] ?? theme().muted
+
   const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
   const idleSeconds = (): number => data()?.refreshSeconds ?? REFRESH_SECONDS_IDLE
   const isStarting = (app: AppStatusPayload): boolean =>
@@ -622,6 +656,7 @@ function CoolifySidebar(props: {
       refresh: () => void load(),
       markStarting: (applicationUUID) =>
         setStarting((existing) => markStartingUp(existing, applicationUUID, Date.now())),
+      setBusy,
     })
     // Every listener debounces. `project.changed` matters most: without it a
     // mapping written by the model would not appear until the next tick.
@@ -673,13 +708,16 @@ function CoolifySidebar(props: {
 
       {/* Capabilities: the line takes the overall tone, each ability its own. */}
       <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure} flexDirection="row">
-        <text fg={toneColour(theme(), abilityTone(data()?.capabilities))} wrapMode="none" flexShrink={0}>
-          token
+        <text fg={accessColour()} wrapMode="none" flexShrink={0}>
+          access
+        </text>
+        <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+          ·
         </text>
         <Show
           when={abilityEntries(data()?.capabilities).some((entry) => entry.status !== "unknown")}
           fallback={
-            <text fg={toneColour(theme(), abilityTone(data()?.capabilities))} wrapMode="none" flexShrink={0}>
+            <text fg={accessColour()} wrapMode="none" flexShrink={0}>
               {" "}
               none
             </text>
@@ -740,9 +778,14 @@ function CoolifySidebar(props: {
               </For>
 
               <Show when={group.apps.length > MAX_ROWS}>
-                <text fg={theme().muted} wrapMode="none" truncate onMouseUp={() => void props.onAllApps()}>
-                  +{group.apps.length - MAX_ROWS} more · show all
-                </text>
+                <box flexDirection="row" gap={1} onMouseUp={() => void props.onAllApps()}>
+                  <Show when={busy()}>
+                    <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
+                  </Show>
+                  <text fg={theme().muted} wrapMode="none" truncate>
+                    {busy() ? "loading…" : `+${group.apps.length - MAX_ROWS} more · show all`}
+                  </text>
+                </box>
               </Show>
 
               <Show when={!failed() && data()?.connected && group.apps.length === 0}>
@@ -871,6 +914,15 @@ export function abilityEntries(capabilities: CapabilitiesPayload | undefined): r
  * The tone for the whole capabilities line: green when every ability is
  * granted, amber while only some are, red when none are.
  */
+/**
+ * How much access the token has, as a 0-4 step. Zero means every ability was
+ * refused, four means all of them were granted. Kept separate from the tone
+ * vocabulary because the scale needs more than three steps.
+ */
+export function accessLevel(capabilities: CapabilitiesPayload | undefined): number {
+  return abilityEntries(capabilities).filter((entry) => entry.status === "granted").length
+}
+
 export function abilityTone(capabilities: CapabilitiesPayload | undefined): LineTone {
   const entries = abilityEntries(capabilities)
   const granted = entries.filter((entry) => entry.status === "granted").length
