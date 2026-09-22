@@ -5,6 +5,7 @@ import { TextAttributes } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { normalizeDeploymentStatus } from "./coolify/deploy"
 import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
+import { DEFAULT_REFRESH_SECONDS } from "./options"
 import {
   Coolify as CoolifyRpc,
   type ApplicationsPayload,
@@ -20,14 +21,29 @@ const MAX_ROWS = 4
 /**
  * Refresh cadence. Idle polling only exists to catch container drift that no
  * event announces; while a deployment is running the sidebar follows it closely.
+ * The idle value is only a fallback — the server sends the configured cadence
+ * in the `applications` payload.
  */
-const REFRESH_SECONDS_IDLE = 60
+const REFRESH_SECONDS_IDLE = DEFAULT_REFRESH_SECONDS
 const REFRESH_SECONDS_ACTIVE = 10
+/** A restart is abandoned if it never reports a settled state. */
+export const STARTING_TIMEOUT_MS = 3 * 60 * 1_000
+/**
+ * A just-triggered restart keeps spinning at least this long, so a poll that
+ * still sees the old running state cannot clear it before Coolify reacts.
+ */
+export const STARTING_MIN_SPIN_MS = 15_000
 /** Event-triggered reloads are trailing-debounced so a burst costs one request. */
 const EVENT_DEBOUNCE_MS = 1_500
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 export type LineTone = RuntimeTone | "muted"
+
+/** What the mounted sidebar exposes back to the plugin. */
+interface SidebarControls {
+  readonly refresh: () => void
+  readonly markStarting: (applicationUUID: string) => void
+}
 
 const DEPLOY_PROMPT = `Set up and deploy this project on Coolify, using the \`coolify\` tools.
 
@@ -78,11 +94,12 @@ export default Plugin.define({
     const rpc = context.client.rpc(CoolifyRpc)
 
     /**
-     * The mounted sidebar publishes its reload here, so the Refresh action can
-     * trigger one on demand. Events are broadcast the other way — a plugin can
-     * only emit server-side, so the client cannot ask itself to re-read.
+     * The mounted sidebar publishes its controls here, so the Refresh action can
+     * trigger one on demand and a lifecycle action can mark its application as
+     * starting up. Events are broadcast the other way — a plugin can only emit
+     * server-side, so the client cannot ask itself to re-read.
      */
-    let refreshSidebar: (() => void) | undefined
+    let sidebarControls: SidebarControls | undefined
 
     const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "info") =>
       context.ui.toast.show({ message, variant })
@@ -381,6 +398,7 @@ export default Plugin.define({
           const result = (await rpc.deploy({ action: "restart", applicationUUID: app.applicationUUID, wait: false })) as {
             message?: string
           }
+          sidebarControls?.markStarting(app.applicationUUID)
           toast(result.message ?? "Restart requested.", "success")
           return
         }
@@ -396,6 +414,7 @@ export default Plugin.define({
           applicationUUID: app.applicationUUID,
           commit: commit.trim(),
         })) as { message?: string }
+        sidebarControls?.markStarting(app.applicationUUID)
         toast(result.message ?? "Rollback requested.", "success")
       } catch (cause) {
         toast(`Coolify: ${message(cause)}`, "error")
@@ -497,8 +516,8 @@ export default Plugin.define({
           onAppActions={openAppActions}
           onAllApps={() => openAllApps(sessionDirectory())}
           onConfigure={() => void openConfigure(sessionDirectory())}
-          onReady={(refresh) => {
-            refreshSidebar = refresh
+          onReady={(controls) => {
+            sidebarControls = controls
           }}
         />
       ),
@@ -519,7 +538,7 @@ function CoolifySidebar(props: {
   onAppActions: (app: AppStatusPayload) => Promise<void>
   onAllApps: () => Promise<void>
   onConfigure: () => void
-  onReady: (refresh: () => void) => void
+  onReady: (controls: SidebarControls) => void
 }) {
   const context = usePlugin()
   const rpc = context.client.rpc(CoolifyRpc)
@@ -532,11 +551,17 @@ function CoolifySidebar(props: {
   const [busy, setBusy] = createSignal(false)
   const [remaining, setRemaining] = createSignal(REFRESH_SECONDS_IDLE)
   const [frame, setFrame] = createSignal(0)
+  const [starting, setStarting] = createSignal<readonly StartingUp[]>([])
   let inFlight: Promise<void> | undefined
   let debounce: ReturnType<typeof setTimeout> | undefined
+  /** The rows from the previous poll, used to spot a restart we did not trigger. */
+  let previousRows: readonly AppStatusPayload[] = []
 
   const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
   const hidden = createMemo(() => Math.max(0, (data()?.apps?.length ?? 0) - rows().length))
+  const idleSeconds = (): number => data()?.refreshSeconds ?? REFRESH_SECONDS_IDLE
+  const isStarting = (app: AppStatusPayload): boolean =>
+    starting().some((entry) => entry.applicationUUID === app.applicationUUID)
 
   const directory = (): string | undefined =>
     context.data.session.get(props.sessionID)?.location?.directory ?? context.location?.directory
@@ -549,18 +574,26 @@ function CoolifySidebar(props: {
   const load = (): Promise<void> => {
     if (inFlight) return inFlight
     setBusy(true)
+    let cadence = idleSeconds()
     inFlight = (async () => {
       try {
         // The RPC `location` option is not honoured, so the directory travels in
         // the input instead. Without it the server answers for its own default
         // location and a freshly mapped project shows nothing.
-        setData((await rpc.applications({ scope: "mapped", directory: directory() })) as ApplicationsPayload)
+        const payload = (await rpc.applications({ scope: "mapped", directory: directory() })) as ApplicationsPayload
+        const nextRows = payload.apps ?? []
+        cadence = payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
+        const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, Date.now(), STARTING_TIMEOUT_MS)
+        previousRows = nextRows
+        setStarting(nextStarting)
+        setData(payload)
         setFailed(false)
+        cadence = refreshSeconds(nextRows, cadence, nextStarting)
       } catch {
         setFailed(true)
       } finally {
         setBusy(false)
-        setRemaining(refreshSeconds(rows()))
+        setRemaining(cadence)
         inFlight = undefined
       }
     })()
@@ -582,7 +615,11 @@ function CoolifySidebar(props: {
 
   onMount(() => {
     void load()
-    props.onReady(() => void load())
+    props.onReady({
+      refresh: () => void load(),
+      markStarting: (applicationUUID) =>
+        setStarting((existing) => markStartingUp(existing, applicationUUID, Date.now())),
+    })
     // Every listener debounces. `project.changed` matters most: without it a
     // mapping written by the model would not appear until the next tick.
     const stops = [
@@ -602,13 +639,13 @@ function CoolifySidebar(props: {
 
   createEffect(() => {
     if (remaining() > 0) return
-    setRemaining(REFRESH_SECONDS_IDLE)
+    setRemaining(idleSeconds())
     void load()
   })
 
-  // Spinner frames only run while a request is actually in flight.
+  // Spinner frames run while a request is in flight or a row is coming back up.
   createEffect(() => {
-    if (!busy()) return
+    if (!busy() && starting().length === 0) return
     const id = setInterval(() => setFrame((value) => value + 1), 100)
     onCleanup(() => clearInterval(id))
   })
@@ -631,15 +668,29 @@ function CoolifySidebar(props: {
         </text>
       </box>
 
-      {/* Capabilities. */}
-      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
-        <text
-          fg={abilitySummary(data()?.capabilities) === "none" ? theme().feedback.warning.base : theme().muted}
-          wrapMode="none"
-          truncate
-        >
-          token {abilitySummary(data()?.capabilities)}
+      {/* Capabilities: the line takes the overall tone, each ability its own. */}
+      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure} flexDirection="row">
+        <text fg={toneColour(theme(), abilityTone(data()?.capabilities))} wrapMode="none" flexShrink={0}>
+          token
         </text>
+        <Show
+          when={abilityEntries(data()?.capabilities).some((entry) => entry.status !== "unknown")}
+          fallback={
+            <text fg={toneColour(theme(), abilityTone(data()?.capabilities))} wrapMode="none" flexShrink={0}>
+              {" "}
+              none
+            </text>
+          }
+        >
+          <For each={abilityEntries(data()?.capabilities)}>
+            {(entry) => (
+              <text fg={toneColour(theme(), entry.tone)} wrapMode="none" flexShrink={0}>
+                {" "}
+                {entry.label}
+              </text>
+            )}
+          </For>
+        </Show>
       </box>
 
       {/* Applications: status light, name, state. */}
@@ -654,7 +705,12 @@ function CoolifySidebar(props: {
               onMouseOut={() => setHover(null)}
               onMouseUp={() => void props.onAppActions(app)}
             >
-              <text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>
+              <Show
+                when={isStarting(app)}
+                fallback={<text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>}
+              >
+                <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
+              </Show>
               <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
                 {app.name}
               </text>
@@ -761,28 +817,149 @@ function instanceHint(data: ApplicationsPayload | undefined): string {
   }
 }
 
-export function abilitySummary(capabilities: CapabilitiesPayload | undefined): string {
+/** The four abilities, in display order, with the short label each shows. */
+const ABILITIES: ReadonlyArray<readonly [key: string, label: string]> = [
+  ["read", "read"],
+  ["write", "write"],
+  ["deploy", "deploy"],
+  ["read:sensitive", "secrets"],
+]
+
+export interface AbilityEntry {
+  readonly key: string
+  readonly label: string
+  readonly status: "granted" | "denied" | "unknown"
+  readonly tone: LineTone
+}
+
+/** One coloured entry per ability, so the line shows status per ability. */
+export function abilityEntries(capabilities: CapabilitiesPayload | undefined): readonly AbilityEntry[] {
   const probes = capabilities?.probes ?? {}
-  const order: ReadonlyArray<readonly [string, string]> = [
-    ["read", "read"],
-    ["write", "write"],
-    ["deploy", "deploy"],
-    ["read:sensitive", "secrets"],
-  ]
-  const granted = order.filter(([key]) => probes[key]?.status === "granted").map(([, label]) => label)
+  return ABILITIES.map(([key, label]) => {
+    const status = probes[key]?.status ?? "unknown"
+    return {
+      key,
+      label,
+      status,
+      tone: status === "granted" ? "ok" : status === "denied" ? "bad" : "muted",
+    }
+  })
+}
+
+/**
+ * The tone for the whole capabilities line: green when every ability is
+ * granted, amber while only some are, red when none are.
+ */
+export function abilityTone(capabilities: CapabilitiesPayload | undefined): LineTone {
+  const entries = abilityEntries(capabilities)
+  const granted = entries.filter((entry) => entry.status === "granted").length
+  if (granted === 0) return "bad"
+  return granted === entries.length ? "ok" : "warn"
+}
+
+export function abilitySummary(capabilities: CapabilitiesPayload | undefined): string {
+  const granted = abilityEntries(capabilities)
+    .filter((entry) => entry.status === "granted")
+    .map((entry) => entry.label)
   return granted.length > 0 ? granted.join(" ") : "none"
+}
+
+/** A restarted application the sidebar should mark as coming back up. */
+export interface StartingUp {
+  readonly applicationUUID: string
+  /** When the restart was noticed (detected or triggered locally). */
+  readonly startedAt: number
+}
+
+/**
+ * Whether a row looks mid-restart: a container in a transitional state, or a
+ * deployment that has been queued or is running.
+ */
+export function isStartingSignal(app: AppStatusPayload): boolean {
+  const state = app.runtime?.state
+  if (state === "starting" || state === "restarting" || state === "exited") return true
+  const status = normalizeDeploymentStatus(app.latestDeployment?.status)
+  return status === "queued" || status === "in_progress"
+}
+
+/** The previous poll showed the application up, so a change is a restart. */
+function wasUp(app: AppStatusPayload): boolean {
+  if (app.runtime?.state === "running") return true
+  if (app.runtime?.health === "healthy") return true
+  return normalizeDeploymentStatus(app.latestDeployment?.status) === "finished"
+}
+
+/** Mark an application as starting up because the sidebar itself restarted it. */
+export function markStartingUp(
+  existing: readonly StartingUp[],
+  applicationUUID: string,
+  now: number,
+): readonly StartingUp[] {
+  if (existing.some((entry) => entry.applicationUUID === applicationUUID)) return existing
+  return [...existing, { applicationUUID, startedAt: now }]
+}
+
+/**
+ * Which applications are starting up, given the last two polls and the set
+ * already being followed.
+ *
+ * A row enters the set when the previous poll showed it up and this one shows a
+ * restart signal — including restarts the plugin never triggered, such as a
+ * change made in the Coolify UI. It leaves once the signal is gone and the
+ * minimum spin has elapsed, or after the timeout, so it can never spin forever.
+ */
+export function reconcileStartingUp(
+  existing: readonly StartingUp[],
+  previous: readonly AppStatusPayload[],
+  next: readonly AppStatusPayload[],
+  now: number,
+  timeoutMs: number = STARTING_TIMEOUT_MS,
+): readonly StartingUp[] {
+  const previousById = new Map(previous.map((app) => [app.applicationUUID, app]))
+  const existingById = new Map(existing.map((entry) => [entry.applicationUUID, entry]))
+  const result: StartingUp[] = []
+
+  for (const app of next) {
+    const held = existingById.get(app.applicationUUID)
+    const signal = isStartingSignal(app)
+    if (held) {
+      if (now - held.startedAt >= timeoutMs) continue
+      if (signal || now - held.startedAt < STARTING_MIN_SPIN_MS) result.push(held)
+      continue
+    }
+    const before = previousById.get(app.applicationUUID)
+    // An application that was never up cannot be "restarting" — it is simply
+    // stopped or never deployed, and should not claim a spinner.
+    if (before && wasUp(before) && signal) {
+      result.push({ applicationUUID: app.applicationUUID, startedAt: now })
+    }
+  }
+
+  return result
 }
 
 /**
  * How long until the next automatic refresh: soon while a deployment is in
- * flight, leisurely when nothing is happening.
+ * flight or a restart is settling, leisurely when nothing is happening. The
+ * active cadence stays below the idle one even when a small idle cadence is
+ * configured, so "active" is always faster.
  */
-export function refreshSeconds(apps: readonly AppStatusPayload[]): number {
+export function refreshSeconds(
+  apps: readonly AppStatusPayload[],
+  idleSeconds: number = REFRESH_SECONDS_IDLE,
+  starting: readonly StartingUp[] = [],
+): number {
+  const startingIDs = new Set(starting.map((entry) => entry.applicationUUID))
   const active = apps.some((app) => {
+    if (startingIDs.has(app.applicationUUID)) return true
     const status = normalizeDeploymentStatus(app.latestDeployment?.status)
     return status === "queued" || status === "in_progress"
   })
-  return active ? REFRESH_SECONDS_ACTIVE : REFRESH_SECONDS_IDLE
+  return active ? activeCadence(idleSeconds) : idleSeconds
+}
+
+function activeCadence(idleSeconds: number): number {
+  return Math.max(1, Math.min(REFRESH_SECONDS_ACTIVE, idleSeconds - 1))
 }
 
 export function appRowTone(app: AppStatusPayload): LineTone {

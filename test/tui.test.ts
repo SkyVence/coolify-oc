@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest"
-import { abilitySummary, appRowLabel, appRowState, appRowTone, refreshSeconds, statusLight } from "../src/tui"
+import {
+  STARTING_MIN_SPIN_MS,
+  STARTING_TIMEOUT_MS,
+  abilityEntries,
+  abilitySummary,
+  abilityTone,
+  appRowLabel,
+  appRowState,
+  appRowTone,
+  markStartingUp,
+  reconcileStartingUp,
+  refreshSeconds,
+  statusLight,
+} from "../src/tui"
 
 /**
  * These tests import the real TUI entry and drive `setup` with a mock context.
@@ -331,14 +344,124 @@ describe("refreshSeconds", () => {
   const app = (status?: string) =>
     ({ key: "web", applicationUUID: "a1", name: "web", ...(status ? { latestDeployment: { status } } : {}) }) as any
 
-  it("polls slowly when nothing is happening", () => {
-    expect(refreshSeconds([])).toBe(60)
-    expect(refreshSeconds([app("finished"), app()])).toBe(60)
+  it("polls on the configured idle cadence when nothing is happening", () => {
+    expect(refreshSeconds([])).toBe(25)
+    expect(refreshSeconds([app("finished"), app()])).toBe(25)
+  })
+
+  it("honours the configured idle cadence from the plugin option", () => {
+    expect(refreshSeconds([], 90)).toBe(90)
+    expect(refreshSeconds([app("finished")], 90)).toBe(90)
   })
 
   it("follows a deployment closely while it runs", () => {
     expect(refreshSeconds([app("in_progress")])).toBe(10)
     expect(refreshSeconds([app("queued")])).toBe(10)
+    // The active cadence stays below the idle one even for a small idle value.
+    expect(refreshSeconds([app("in_progress")], 6)).toBe(5)
+  })
+
+  it("polls fast while a restart is settling", () => {
+    const running = { key: "web", applicationUUID: "a1", name: "web" } as any
+    const starting = [{ applicationUUID: "a1", startedAt: 0 }]
+    expect(refreshSeconds([running], 25, starting)).toBe(10)
+    // An unrelated starting application does not slow the deployment cadence.
+    expect(refreshSeconds([running], 25, [{ applicationUUID: "other", startedAt: 0 }])).toBe(25)
+  })
+})
+
+describe("ability tones", () => {
+  const probes = (statuses: Record<string, string>) =>
+    ({
+      connected: true,
+      probes: Object.fromEntries(Object.entries(statuses).map(([key, status]) => [key, { status, detail: "" }])),
+    }) as any
+
+  it("gives every ability its own tone from its probe status", () => {
+    const entries = abilityEntries(
+      probes({ read: "granted", write: "denied", deploy: "unknown", "read:sensitive": "granted" }),
+    )
+    expect(entries.map((entry) => [entry.label, entry.status, entry.tone])).toEqual([
+      ["read", "granted", "ok"],
+      ["write", "denied", "bad"],
+      ["deploy", "unknown", "muted"],
+      ["secrets", "granted", "ok"],
+    ])
+  })
+
+  it("tones the whole line by how many abilities are granted", () => {
+    expect(abilityTone(probes({ read: "granted", write: "granted", deploy: "granted", "read:sensitive": "granted" }))).toBe(
+      "ok",
+    )
+    expect(abilityTone(probes({ read: "granted", write: "granted" }))).toBe("warn")
+    expect(abilityTone(probes({ read: "granted" }))).toBe("warn")
+    expect(abilityTone(probes({ read: "denied", write: "unknown" }))).toBe("bad")
+    expect(abilityTone(undefined)).toBe("bad")
+  })
+})
+
+describe("starting up detection", () => {
+  const app = (over: any = {}) => ({ key: "web", applicationUUID: "a1", name: "web", ...over })
+  const running = app({ runtime: { state: "running", health: "healthy", label: "running", raw: "running:healthy" } })
+  const restarting = app({
+    runtime: { state: "restarting", health: "none", label: "restarting", raw: "restarting" },
+  })
+  const exited = app({ runtime: { state: "exited", health: "none", label: "exited", raw: "exited" } })
+  const unknown = app({ runtime: { state: "unknown", health: "none", label: "unknown", raw: "" } })
+
+  it("detects an external restart between polls", () => {
+    const next = reconcileStartingUp([], [running], [restarting], 1_000)
+    expect(next).toEqual([{ applicationUUID: "a1", startedAt: 1_000 }])
+  })
+
+  it("treats a running container that exited as restarting, and a queued deployment too", () => {
+    expect(reconcileStartingUp([], [running], [exited], 0)).toHaveLength(1)
+    const queued = app({ latestDeployment: { status: "queued" } })
+    const finished = app({ latestDeployment: { status: "finished" } })
+    expect(reconcileStartingUp([], [finished], [queued], 0)).toHaveLength(1)
+  })
+
+  it("clears once the restart settles back to running", () => {
+    const held = [{ applicationUUID: "a1", startedAt: 0 }]
+    const settled = reconcileStartingUp(held, [restarting], [running], 30_000)
+    expect(settled).toEqual([])
+  })
+
+  it("keeps spinning through a still-transitional poll", () => {
+    const held = [{ applicationUUID: "a1", startedAt: 0 }]
+    expect(reconcileStartingUp(held, [restarting], [restarting], 20_000)).toEqual(held)
+  })
+
+  it("expires after the timeout even if it never settled", () => {
+    const held = [{ applicationUUID: "a1", startedAt: 0 }]
+    expect(reconcileStartingUp(held, [restarting], [restarting], STARTING_TIMEOUT_MS)).toEqual([])
+    expect(reconcileStartingUp(held, [restarting], [restarting], STARTING_TIMEOUT_MS - 1)).toEqual(held)
+  })
+
+  it("does not flag an application that was never running", () => {
+    // Never deployed: nothing to restart from.
+    expect(reconcileStartingUp([], [unknown], [exited], 0)).toEqual([])
+    // Started from cold, so a queued deployment is not a restart either.
+    const coldDeploy = app({ latestDeployment: { status: "queued" } })
+    expect(reconcileStartingUp([], [unknown], [coldDeploy], 0)).toEqual([])
+    // Newly appeared rows have no previous state at all.
+    expect(reconcileStartingUp([], [], [exited], 0)).toEqual([])
+  })
+
+  it("holds a locally-triggered restart until the signal shows or the grace lapses", () => {
+    const marked = markStartingUp([], "a1", 0)
+    expect(marked).toEqual([{ applicationUUID: "a1", startedAt: 0 }])
+    // A poll that still shows the old running state does not clear it immediately.
+    expect(reconcileStartingUp(marked, [running], [running], 5_000)).toEqual(marked)
+    // Past the minimum spin, a still-running row is treated as settled.
+    expect(reconcileStartingUp(marked, [running], [running], STARTING_MIN_SPIN_MS)).toEqual([])
+    // The signal arriving keeps it going.
+    expect(reconcileStartingUp(marked, [running], [restarting], 5_000)).toEqual(marked)
+  })
+
+  it("does not duplicate an application that is marked twice", () => {
+    const once = markStartingUp([], "a1", 0)
+    expect(markStartingUp(once, "a1", 99)).toBe(once)
   })
 })
 

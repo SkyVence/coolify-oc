@@ -134,6 +134,7 @@ export const Coolify = Rpc.define({
         environmentName: string,
         configFile: string,
         scope: string,
+        refreshSeconds: integer,
         apps: { type: "array", items: unknownObject },
         capabilities: capabilitiesSchema,
         message: string,
@@ -300,6 +301,8 @@ export interface ApplicationsPayload {
   readonly environmentName?: string
   readonly configFile?: string
   readonly scope?: "mapped" | "project"
+  /** Idle refresh cadence the plugin was configured with, in seconds. */
+  readonly refreshSeconds?: number
   readonly apps?: readonly AppStatusPayload[]
   readonly capabilities?: CapabilitiesPayload
   readonly message?: string

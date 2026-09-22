@@ -103,6 +103,9 @@ options, configure it from the TUI or the environment:
 - endpoint — `/coolify-endpoint`, or `COOLIFY_ENDPOINT`
 - token — `/coolify-connect`
 
+`refreshSeconds` is a plugin option, so it needs the per-project form below;
+discovery cannot carry it. The default is `25`.
+
 The endpoint is stored in plugin storage, so it survives restarts and applies to
 every project.
 
@@ -115,7 +118,11 @@ Add the plugin to `opencode.jsonc` in the project that should be able to deploy:
   "plugins": [
     {
       "package": "/absolute/path/to/opencode-coolify",
-      "options": { "endpoint": "https://coolify.example.com" }
+      "options": {
+        "endpoint": "https://coolify.example.com",
+        // How often the sidebar polls while nothing is in flight, in seconds.
+        "refreshSeconds": 25
+      }
     }
   ]
 }
@@ -124,6 +131,10 @@ Add the plugin to `opencode.jsonc` in the project that should be able to deploy:
 `https://host`, `host`, and `https://host/api/v1` are all accepted; the plugin
 normalizes to `<origin>/api/v1`. The TUI half is loaded automatically for any
 plugin in `opencode.json(c)` that exposes `./tui`.
+
+`refreshSeconds` must be an integer between `5` and `600`; anything else is
+ignored and the default of `25` is used. While a deployment or restart is in
+flight the sidebar polls faster than the configured idle cadence regardless.
 
 Do not configure the same plugin globally **and** per project — it would load
 twice.
@@ -414,13 +425,18 @@ Configure
 - **The title line** is the instance: the team name, the host, or `not connected`
   / `not configured`. It shows a spinner while a request is in flight and a
   countdown to the next automatic refresh. Clicking it refreshes now.
-- **The token line** lists only the abilities the token actually has.
+- **The token line** shows each ability in its own colour — green when granted,
+  red when denied, grey when unknown — and the `token` label takes the tone of
+  the whole line: green when all four are granted, amber when some are, red when
+  none are.
 - **Application rows** put the name and the state in separate elements, so a
   long name ellipsises without ever eating the state. The state is compact —
   `running`, `exited`, `not deployed` — and an unhealthy container is marked
-  `running !`, because the status light already carries the colour. Hovering a
-  row highlights it. Rows are capped at four; `+N more · show all` opens the
-  whole project list.
+  `running !`, because the status light already carries the colour. A row that
+  is starting up replaces its status light with a spinner until it settles; this
+  covers restarts this plugin did not trigger, such as one made in the Coolify
+  UI, and the row polls faster until it is back. Hovering a row highlights it.
+  Rows are capped at four; `+N more · show all` opens the whole project list.
 - **`Configure`** is the single project-level entry point. It opens a list of
   the plugin's own actions, each of which then opens a **popup dedicated to that
   one action**:
@@ -512,8 +528,14 @@ optimising, and three things keep it cheap:
   coalesced. A deployment emits `deploy.progress` every ~3s; reloading per event
   cost roughly 2,000–3,000 requests over a ten-minute deploy. Now a burst costs
   one request.
-- **The cadence adapts.** 60 seconds while idle, 10 seconds while any row's
-  deployment is `queued` or `in_progress`.
+- **The cadence adapts.** `refreshSeconds` (default 25, range 5–600) while idle,
+  10 seconds while any row's deployment is `queued`/`in_progress` or a restart
+  is settling. The active cadence is always below the idle one.
+- **Restarts are detected from the poll, not just from this plugin.** A row that
+  was up and is now `starting`/`restarting`/`exited`, or whose deployment just
+  went `in_progress`/`queued`, is followed with a spinner and the fast cadence,
+  so a change made in the Coolify UI is picked up too. The flag clears when the
+  row settles or after 3 minutes, whichever comes first.
 - **One deployment-queue fetch per payload.** `latestDeploymentFor` takes a
   shared lazy getter, so a project whose applications have no per-app history no
   longer downloads the whole queue once per application.
