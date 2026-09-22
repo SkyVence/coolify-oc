@@ -195,7 +195,7 @@ export default Plugin.define({
      * the runtime expands the registered skill into the message, so the same
      * skill serves a client that exposes skills but not plugin tools.
      */
-    async function runInSideChat(title: string, skill: CoolifySkill, text: string): Promise<void> {
+    async function runInSideChat(title: string, skill: CoolifySkill, text: string): Promise<boolean> {
       // `promptInput`, not `message`: `message` is the error formatter below.
       const promptInput = { text, skills: [{ id: skill.id }] }
       if (!context.ui.tabs.enabled()) {
@@ -204,14 +204,14 @@ export default Plugin.define({
           message: "A side conversation needs session tabs. Run this in the current chat instead?",
           label: { confirm: "Run here", cancel: "Cancel" },
         })
-        if (!runHere) return
+        if (!runHere) return false
         const sessionID = currentSessionID()
         if (!sessionID) {
           toast("Open a session first.", "warning")
-          return
+          return false
         }
         await context.client.session.prompt({ sessionID, ...promptInput })
-        return
+        return true
       }
 
       const directory = sessionDirectory() ?? context.location?.directory ?? context.data.location.default().directory
@@ -224,13 +224,15 @@ export default Plugin.define({
         const sessionID = created?.id
         if (!sessionID) {
           toast("Could not create the side chat.", "error")
-          return
+          return false
         }
         await context.client.session.prompt({ sessionID, ...promptInput })
         context.ui.tabs.open(sessionID)
         toast(`${title} started in a new tab.`, "success")
+        return true
       } catch (cause) {
         toast(`Could not start the side chat: ${message(cause)}`, "error")
+        return false
       }
     }
 
@@ -242,8 +244,8 @@ export default Plugin.define({
     }
 
     /** The model-driven mapping: needed for a monorepo, or when nothing matches. */
-    async function mapWithModel(): Promise<void> {
-      await runInSideChat("Map repository", MAP_SKILL, "Map this repository's Coolify applications.")
+    async function mapWithModel(): Promise<boolean> {
+      return await runInSideChat("Map repository", MAP_SKILL, "Map this repository's Coolify applications.")
     }
 
     /**
@@ -256,8 +258,8 @@ export default Plugin.define({
         await promptForProjectJson(directory)
         return
       }
+      if (!(await mapWithModel())) return
       modelMapAttempts.add(key)
-      await mapWithModel()
       toast("If the model could not map it, click map again to paste the config yourself.", "info")
     }
 
@@ -332,7 +334,10 @@ export default Plugin.define({
       })
       if (!choice) return
       if (choice === "map") return await mapFlow(directory)
-      if (choice === "map-model") return mapWithModel()
+      if (choice === "map-model") {
+        await mapWithModel()
+        return
+      }
       openSetupPopup()
     }
 
