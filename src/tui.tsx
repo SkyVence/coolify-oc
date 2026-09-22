@@ -1,0 +1,840 @@
+import type { Integration } from "@opencode/plugin"
+import { Plugin, usePlugin } from "@opencode/plugin/tui"
+import type { KeymapLayer } from "@opencode/plugin/tui/context"
+import { TextAttributes } from "@opentui/core"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { normalizeDeploymentStatus } from "./coolify/deploy"
+import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
+import {
+  Coolify as CoolifyRpc,
+  type ApplicationsPayload,
+  type AppStatusPayload,
+  type CapabilitiesPayload,
+  type CandidatePayload,
+  type ResolvePayload,
+} from "./rpc"
+
+const INTEGRATION_ID = "coolify" as Integration.ID
+/** How many application rows the sidebar shows before it stops. */
+const MAX_ROWS = 4
+/**
+ * Refresh cadence. Idle polling only exists to catch container drift that no
+ * event announces; while a deployment is running the sidebar follows it closely.
+ */
+const REFRESH_SECONDS_IDLE = 60
+const REFRESH_SECONDS_ACTIVE = 10
+/** Event-triggered reloads are trailing-debounced so a burst costs one request. */
+const EVENT_DEBOUNCE_MS = 1_500
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+export type LineTone = RuntimeTone | "muted"
+
+const DEPLOY_PROMPT = `Set up and deploy this project on Coolify, using the \`coolify\` tools.
+
+Ask me whenever something is ambiguous — do not guess, and do not provision anything I have not confirmed.
+
+1. Call \`coolify_resolve\` and read its \`config\` block.
+   - If a \`coolify.json\` entry covers this directory, use it.
+   - In a monorepo where several applications are listed but none owns this directory, do NOT pick
+     one: show me the keys and their paths and ask which applies, using the \`question\` tool.
+   - If nothing is linked, call \`coolify_list_resources\`, show me the candidates, and ask. Then
+     pin the answer with \`coolify_link\`.
+   - If this project is not on Coolify at all, offer to create it with \`coolify_plan_application\`
+     then \`coolify_create_application\`, and confirm the plan with me first.
+2. Call \`coolify_application\` with action "settings" to read what is configurable, and
+   "deployments" for the history. Call \`coolify_application\` action "envs" for variable names.
+3. Databases: call \`coolify_databases\`, then compare against the databases in \`coolify.json\` and
+   against what the repository actually needs (look at .env files, compose files, and config).
+   - If something required is missing, tell me what you propose — engine, name, internal or
+     public, and which project and server — and ask before calling \`coolify_create_database\`.
+   - Skip this step if the project uses no database.
+4. Ask me, in one batch of \`question\` calls, about anything that should change before deploying:
+   at minimum the public domain, the exposed port, and the build pack when it is not obvious.
+   Infer sensible defaults from the repository so I only have to correct you.
+5. Apply what I confirm with \`coolify_application_update\`. In a monorepo, also record the mapping
+   with \`coolify_configure_project\` so the next run resolves without asking. Show me the file
+   content before writing it.
+6. Call \`coolify_deploy\` and report the final status. Deploy any database you created too.`
+
+const SETUP_PROMPT = `Inspect this repository and record its Coolify mapping in \`coolify.json\`, using the \`coolify\` tools.
+
+Ask before writing anything, and never invent a UUID.
+
+1. Call \`coolify_resolve\` to see what is already mapped, then \`coolify_list_resources\` to see the
+   available applications, projects, servers, and environments.
+2. Work out whether this is a monorepo by looking for multiple deployable packages — workspace
+   manifests (pnpm/npm/yarn workspaces, go.work, Cargo workspace), several Dockerfiles, or several
+   compose files — and note the repo-relative directory each one owns.
+3. Call \`coolify_databases\` and record the databases this project already has.
+4. Propose the whole \`coolify.json\` and show it to me before writing.
+5. Ask me, with the \`question\` tool, about every mapping you are unsure of. Offer the candidates
+   you found rather than asking me to supply raw UUIDs.
+6. Write the agreed file with \`coolify_configure_project\`. Do not create applications or databases
+   in this step; only record what already exists. Tell me to commit the file afterwards.`
+
+export default Plugin.define({
+  id: "opencode.coolify.tui",
+  setup(context) {
+    const rpc = context.client.rpc(CoolifyRpc)
+
+    /**
+     * The mounted sidebar publishes its reload here, so the Refresh action can
+     * trigger one on demand. Events are broadcast the other way — a plugin can
+     * only emit server-side, so the client cannot ask itself to re-read.
+     */
+    let refreshSidebar: (() => void) | undefined
+
+    const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "info") =>
+      context.ui.toast.show({ message, variant })
+
+    const currentSessionID = (): string | undefined => {
+      const route = context.ui.router.current()
+      return route.type === "session" ? route.sessionID : undefined
+    }
+
+    /** The current session's project directory, which is not always the TUI's. */
+    const sessionDirectory = (): string | undefined => {
+      const sessionID = currentSessionID()
+      if (!sessionID) return undefined
+      return context.data.session.get(sessionID)?.location?.directory ?? context.location?.directory
+    }
+
+    async function currentCapabilities(): Promise<CapabilitiesPayload | undefined> {
+      try {
+        return (await rpc.capabilities({})) as CapabilitiesPayload
+      } catch (cause) {
+        toast(`Could not read plugin state: ${message(cause)}`, "error")
+        return undefined
+      }
+    }
+
+    async function promptEndpoint(): Promise<boolean> {
+      const endpoint = await context.ui.dialog.prompt({
+        title: "Coolify instance URL",
+        description: "Base URL of your self-hosted Coolify instance.",
+        placeholder: "https://coolify.example.com",
+      })
+      if (!endpoint?.trim()) return false
+      try {
+        const saved = (await rpc.setEndpoint({ endpoint: endpoint.trim() })) as {
+          ok?: boolean
+          endpoint?: string
+          message?: string
+        }
+        if (saved.ok !== true) {
+          toast(saved.message ?? "That endpoint was rejected.", "error")
+          return false
+        }
+        toast(`Using ${saved.endpoint}.`, "success")
+        return true
+      } catch (cause) {
+        toast(`Could not save the endpoint: ${message(cause)}`, "error")
+        return false
+      }
+    }
+
+    async function promptToken(): Promise<boolean> {
+      const token = await context.ui.dialog.prompt({
+        title: "Coolify API token",
+        description: "Create a token in Coolify under Keys & Tokens → API tokens.",
+        placeholder: "1|abcdef...",
+      })
+      if (!token) return false
+      try {
+        await context.client.integration.connect.key({ integrationID: INTEGRATION_ID, key: token.trim() })
+      } catch (cause) {
+        toast(`Could not store the token: ${message(cause)}`, "error")
+        return false
+      }
+      try {
+        const result = (await rpc.refreshCapabilities({})) as CapabilitiesPayload
+        if (result.connected !== true) {
+          toast(result.message ?? "Token stored, but the instance could not be reached.", "warning")
+          return false
+        }
+        toast(`Connected to ${result.team?.name ?? result.endpoint ?? "Coolify"}.`, "success")
+        return true
+      } catch (cause) {
+        toast(`Token stored, but probing failed: ${message(cause)}`, "warning")
+        return false
+      }
+    }
+
+    async function ensureConfigured(): Promise<boolean> {
+      let state = await currentCapabilities()
+      if (!state) return false
+      if (state.endpointConfigured !== true) {
+        if (!(await promptEndpoint())) return false
+        state = await currentCapabilities()
+        if (state?.endpointConfigured !== true) return false
+      }
+      if (state.connected === true) return true
+      return promptToken()
+    }
+
+    /**
+     * Run the deployment in a separate chat, in a background tab, so the current
+     * conversation is never interrupted. The new session may read Coolify freely
+     * but still asks before every write, deploy or delete.
+     */
+    /**
+     * Open a side conversation in a background tab, or fall back to this chat
+     * when tabs are disabled. Used for both deploy and "map with the model", so
+     * neither needs a session to already be open.
+     */
+    async function runInSideChat(title: string, prompt: string): Promise<void> {
+      if (!context.ui.tabs.enabled()) {
+        const runHere = await context.ui.dialog.confirm({
+          title: "Tabs are disabled",
+          message: "A side conversation needs session tabs. Run this in the current chat instead?",
+          label: { confirm: "Run here", cancel: "Cancel" },
+        })
+        if (!runHere) return
+        const sessionID = currentSessionID()
+        if (!sessionID) {
+          toast("Open a session first.", "warning")
+          return
+        }
+        await context.client.session.prompt({ sessionID, text: prompt })
+        return
+      }
+
+      const directory = sessionDirectory() ?? context.location?.directory ?? context.data.location.default().directory
+      try {
+        const created = await context.client.session.create({
+          title,
+          location: { directory },
+          permissions: [{ action: "coolify.read", resource: "*", effect: "allow" }],
+        })
+        const sessionID = created?.id
+        if (!sessionID) {
+          toast("Could not create the side chat.", "error")
+          return
+        }
+        await context.client.session.prompt({ sessionID, text: prompt })
+        context.ui.tabs.open(sessionID)
+        toast(`${title} started in a new tab.`, "success")
+      } catch (cause) {
+        toast(`Could not start the side chat: ${message(cause)}`, "error")
+      }
+    }
+
+    async function deployInSideChat(app: AppStatusPayload | undefined): Promise<void> {
+      const prompt = app
+        ? `Target application: ${app.name} (${app.applicationUUID}).\n\n${DEPLOY_PROMPT}`
+        : DEPLOY_PROMPT
+      await runInSideChat(app ? `Deploy ${app.name}` : "Coolify deploy", prompt)
+    }
+
+    /** The model-driven mapping: needed for a monorepo, or when nothing matches. */
+    async function mapWithModel(): Promise<void> {
+      await runInSideChat("Map repository", SETUP_PROMPT)
+    }
+
+    /**
+     * The deterministic mapping: resolve the candidates for this directory, let
+     * the user pick, and write `coolify.json` directly. No model turn, and no
+     * session required.
+     */
+    /**
+     * The single project-level entry point. The actions it lists used to be
+     * standalone buttons; each still opens its own dedicated popup.
+     */
+    async function openConfigure(directory: string | undefined): Promise<void> {
+      const choice = await context.ui.dialog.select<string>({
+        title: "Coolify configuration",
+        options: [
+          { title: "Map this project", value: "map", description: "write coolify.json directly — no model" },
+          { title: "Map with the model", value: "map-model", description: "background tab, for a monorepo" },
+          { title: "Set up instance", value: "setup", description: "instance URL and API token" },
+        ],
+      })
+      if (!choice) return
+      if (choice === "map") return await mapFlow(directory)
+      if (choice === "map-model") return mapWithModel()
+      openSetupPopup()
+    }
+
+    /**
+     * A dedicated popup for the plugin's own configuration, separate from
+     * anything application-related. It shows the current state and offers one
+     * button per setting, re-opening itself after each change so the result is
+     * visible immediately.
+     */
+    function openSetupPopup(): void {
+      context.ui.dialog.set({ size: "medium", centered: true })
+      context.ui.dialog.show(() => (
+        <SetupPopup
+          onSetEndpoint={async () => {
+            await promptEndpoint()
+            openSetupPopup()
+          }}
+          onSetToken={async () => {
+            await promptToken()
+            openSetupPopup()
+          }}
+        />
+      ))
+    }
+
+    async function mapFlow(directory: string | undefined): Promise<void> {
+      const state = await currentCapabilities()
+      if (state?.connected !== true) {
+        toast("Connect an API token first.", "warning")
+        return
+      }
+
+      let resolution: ResolvePayload
+      try {
+        resolution = (await rpc.resolve({ directory })) as ResolvePayload
+      } catch (cause) {
+        toast(`Could not search Coolify: ${message(cause)}`, "error")
+        return
+      }
+
+      let chosen: CandidatePayload | undefined
+
+      if (resolution.candidates.length === 0) {
+        const typed = await context.ui.dialog.prompt({
+          title: "Map this repository",
+          description:
+            resolution.notes.join(" ") || "No application matched. Paste an application UUID to map it.",
+          placeholder: "application UUID",
+        })
+        if (!typed?.trim()) return
+        chosen = { applicationUUID: typed.trim(), name: typed.trim() }
+      } else if (resolution.candidates.length === 1) {
+        const only = resolution.candidates[0]!
+        const confirmed = await context.ui.dialog.confirm({
+          title: "Map this repository",
+          message: `Map this project to ${only.name} (${only.applicationUUID})?`,
+          label: { confirm: "Map", cancel: "Cancel" },
+        })
+        if (!confirmed) return
+        chosen = only
+      } else {
+        const value = await context.ui.dialog.select<string>({
+          title: "Which application is this project?",
+          current: resolution.best?.applicationUUID,
+          options: resolution.candidates.map((entry) => ({
+            title: entry.name,
+            value: entry.applicationUUID,
+            description: [entry.applicationUUID, entry.domains].filter(Boolean).join("  "),
+            category: entry.reasons?.length ? entry.reasons.join(", ") : undefined,
+          })),
+        })
+        if (!value) return
+        chosen = resolution.candidates.find((entry) => entry.applicationUUID === value)
+      }
+
+      if (!chosen) return
+      try {
+        const result = (await rpc.configureProject({
+          directory,
+          ...(resolution.config?.projectUUID ? { projectUUID: resolution.config.projectUUID } : {}),
+          ...(resolution.config?.environmentName ? { environmentName: resolution.config.environmentName } : {}),
+          applications: { [slug(chosen.name) || "default"]: { applicationUUID: chosen.applicationUUID, name: chosen.name } },
+        })) as { ok?: boolean; file?: string; message?: string }
+        if (result.ok === true) toast(`Mapped ${chosen.name} in ${result.file}.`, "success")
+        else toast(result.message ?? "Could not map this project.", "error")
+      } catch (cause) {
+        toast(`Could not write coolify.json: ${message(cause)}`, "error")
+      }
+    }
+
+    async function showLogs(app: AppStatusPayload | undefined): Promise<void> {
+      const result = (await rpc.logs({ applicationUUID: app?.applicationUUID, lines: 80 })) as {
+        logs?: string
+        message?: string
+      }
+      const body = result.logs?.trim() ? result.logs.slice(-3_000) : (result.message ?? "No logs.")
+      await context.ui.dialog.alert({ title: `Logs · ${app?.name ?? "application"}`, message: body })
+    }
+
+    /**
+     * App-level actions only. Project-level concerns (mapping, instance) live on
+     * their own dedicated buttons, so this dialog never mixes the two.
+     */
+    async function openAppActions(app: AppStatusPayload): Promise<void> {
+      const choice = await context.ui.dialog.select<string>({
+        title: app.name,
+        options: [
+          { title: "Deploy in a side chat", value: "deploy", description: "opens a background tab" },
+          { title: "View logs", value: "logs" },
+          { title: "Restart", value: "restart" },
+          { title: "Roll back to a commit", value: "rollback" },
+        ],
+      })
+      if (!choice) return
+
+      try {
+        if (choice === "deploy") return await deployInSideChat(app)
+        if (choice === "logs") return await showLogs(app)
+
+        if (choice === "restart") {
+          const confirmed = await context.ui.dialog.confirm({
+            title: `Restart ${app.name}`,
+            message: `Restart ${app.name} on Coolify?`,
+            label: { confirm: "Restart", cancel: "Cancel" },
+          })
+          if (!confirmed) return
+          const result = (await rpc.deploy({ action: "restart", applicationUUID: app.applicationUUID, wait: false })) as {
+            message?: string
+          }
+          toast(result.message ?? "Restart requested.", "success")
+          return
+        }
+
+        const commit = await context.ui.dialog.prompt({
+          title: `Roll back ${app.name}`,
+          description: "Commit to redeploy. The model can list candidates with coolify_application action rollback_images.",
+          placeholder: "commit sha",
+        })
+        if (!commit?.trim()) return
+        const result = (await rpc.deploy({
+          action: "rollback",
+          applicationUUID: app.applicationUUID,
+          commit: commit.trim(),
+        })) as { message?: string }
+        toast(result.message ?? "Rollback requested.", "success")
+      } catch (cause) {
+        toast(`Coolify: ${message(cause)}`, "error")
+      }
+    }
+
+    /**
+     * Every application in the project, for when the sidebar list is truncated
+     * or an app is not mapped to this repository yet.
+     */
+    async function openAllApps(directory: string | undefined): Promise<void> {
+      let data: ApplicationsPayload
+      try {
+        data = (await rpc.applications({ scope: "project", directory })) as ApplicationsPayload
+      } catch (cause) {
+        toast(`Could not list applications: ${message(cause)}`, "error")
+        return
+      }
+      const apps = data.apps ?? []
+      if (apps.length === 0) {
+        toast("No applications in this project.", "warning")
+        return
+      }
+      const chosen = await context.ui.dialog.select<string>({
+        title: "Applications in this project",
+        options: apps.map((app) => ({
+          title: app.name,
+          value: app.applicationUUID,
+          description: [app.runtime?.label, app.path].filter(Boolean).join("  "),
+        })),
+      })
+      if (!chosen) return
+      const app = apps.find((entry) => entry.applicationUUID === chosen)
+      if (app) await openAppActions(app)
+    }
+
+    // --- Commands -----------------------------------------------------------
+    //
+    // `keymap.layer` needs the TUI's Keymap provider, which does not exist
+    // during `setup`. Registering it there throws "Keymap.Provider is missing"
+    // and aborts the whole plugin, so the layer comes from an `app` slot render.
+    const commandsLayer = (): KeymapLayer => ({
+      mode: "global",
+      priority: 10,
+      commands: [
+        {
+          id: "coolify.panel.open",
+          title: "Coolify: actions",
+          group: "Coolify",
+          bind: false,
+          palette: true,
+          slash: { name: "coolify", aliases: ["coolify-status", "coolify-setup"] },
+          run: async () => {
+            if (!(await ensureConfigured())) return
+            await openAllApps(sessionDirectory())
+          },
+        },
+        {
+          id: "coolify.map",
+          title: "Coolify: map this project",
+          group: "Coolify",
+          bind: false,
+          palette: true,
+          slash: { name: "coolify-map" },
+          run: async () => {
+            if (!(await ensureConfigured())) return
+            await mapFlow(sessionDirectory())
+          },
+        },
+        {
+          id: "coolify.deploy",
+          title: "Coolify: deploy in a side chat",
+          group: "Coolify",
+          bind: false,
+          palette: true,
+          slash: { name: "coolify-deploy" },
+          run: async () => {
+            if (!(await ensureConfigured())) return
+            await deployInSideChat(undefined)
+          },
+        },
+      ],
+      bindings: ["coolify.panel.open", "coolify.map", "coolify.deploy"],
+    })
+
+    context.ui.slot({
+      append: "app",
+      render: () => {
+        context.keymap.layer(commandsLayer)
+        return null
+      },
+    })
+
+    context.ui.slot({
+      append: "sidebar.content",
+      render: (input) => (
+        <CoolifySidebar
+          sessionID={input.sessionID}
+          onAppActions={openAppActions}
+          onAllApps={() => openAllApps(sessionDirectory())}
+          onConfigure={() => void openConfigure(sessionDirectory())}
+          onReady={(refresh) => {
+            refreshSidebar = refresh
+          }}
+        />
+      ),
+    })
+  },
+})
+
+/**
+ * A compact sidebar section.
+ *
+ * The name and the state are separate elements so truncation can never eat the
+ * separator: the name flexes and ellipsises, the state stays put at the right.
+ * Project-level actions are their own labelled buttons rather than being mixed
+ * into the per-application dialog.
+ */
+function CoolifySidebar(props: {
+  sessionID: string
+  onAppActions: (app: AppStatusPayload) => Promise<void>
+  onAllApps: () => Promise<void>
+  onConfigure: () => void
+  onReady: (refresh: () => void) => void
+}) {
+  const context = usePlugin()
+  const rpc = context.client.rpc(CoolifyRpc)
+  const theme = () => context.theme.text
+  const surface = () => context.theme.background
+
+  const [data, setData] = createSignal<ApplicationsPayload | undefined>()
+  const [failed, setFailed] = createSignal(false)
+  const [hover, setHover] = createSignal<number | null>(null)
+  const [busy, setBusy] = createSignal(false)
+  const [remaining, setRemaining] = createSignal(REFRESH_SECONDS_IDLE)
+  const [frame, setFrame] = createSignal(0)
+  let inFlight: Promise<void> | undefined
+  let debounce: ReturnType<typeof setTimeout> | undefined
+
+  const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
+  const hidden = createMemo(() => Math.max(0, (data()?.apps?.length ?? 0) - rows().length))
+
+  const directory = (): string | undefined =>
+    context.data.session.get(props.sessionID)?.location?.directory ?? context.location?.directory
+
+  /**
+   * Coalesced: concurrent callers share one request. During a deployment the
+   * server emits progress every few seconds, and without this each event would
+   * start its own round trip.
+   */
+  const load = (): Promise<void> => {
+    if (inFlight) return inFlight
+    setBusy(true)
+    inFlight = (async () => {
+      try {
+        // The RPC `location` option is not honoured, so the directory travels in
+        // the input instead. Without it the server answers for its own default
+        // location and a freshly mapped project shows nothing.
+        setData((await rpc.applications({ scope: "mapped", directory: directory() })) as ApplicationsPayload)
+        setFailed(false)
+      } catch {
+        setFailed(true)
+      } finally {
+        setBusy(false)
+        setRemaining(refreshSeconds(rows()))
+        inFlight = undefined
+      }
+    })()
+    return inFlight
+  }
+
+  /**
+   * Trailing debounce for event-driven reloads. A deployment emits progress
+   * every few seconds; reloading per event cost thousands of requests per
+   * deploy, and the coalescing above only stopped the overlap, not the volume.
+   */
+  const scheduleLoad = (delayMs = EVENT_DEBOUNCE_MS): void => {
+    if (debounce) clearTimeout(debounce)
+    debounce = setTimeout(() => {
+      debounce = undefined
+      void load()
+    }, delayMs)
+  }
+
+  onMount(() => {
+    void load()
+    props.onReady(() => void load())
+    // Every listener debounces. `project.changed` matters most: without it a
+    // mapping written by the model would not appear until the next tick.
+    const stops = [
+      rpc.events.on("deploy.progress", () => scheduleLoad()),
+      rpc.events.on("link.changed", () => scheduleLoad()),
+      rpc.events.on("capabilities.changed", () => scheduleLoad()),
+      rpc.events.on("project.changed", () => scheduleLoad()),
+    ]
+    // One heartbeat drives both the visible countdown and the auto refresh.
+    const heartbeat = setInterval(() => setRemaining((seconds) => seconds - 1), 1_000)
+    onCleanup(() => {
+      for (const stop of stops) stop()
+      clearInterval(heartbeat)
+      if (debounce) clearTimeout(debounce)
+    })
+  })
+
+  createEffect(() => {
+    if (remaining() > 0) return
+    setRemaining(REFRESH_SECONDS_IDLE)
+    void load()
+  })
+
+  // Spinner frames only run while a request is actually in flight.
+  createEffect(() => {
+    if (!busy()) return
+    const id = setInterval(() => setFrame((value) => value + 1), 100)
+    onCleanup(() => clearInterval(id))
+  })
+
+  return (
+    <box flexDirection="column">
+      {/* Title: which instance, and a refresh on click. */}
+      <box flexDirection="row" gap={1} onMouseUp={() => void load()}>
+        <text attributes={TextAttributes.BOLD} fg={theme().base}>
+          Coolify
+        </text>
+        <Show when={busy()}>
+          <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
+        </Show>
+        <text fg={failed() ? theme().feedback.error.base : theme().muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+          {failed() ? "unreachable" : (data()?.capabilities?.team?.name ?? instanceHint(data()))}
+        </text>
+        <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+          {remaining()}s
+        </text>
+      </box>
+
+      {/* Capabilities. */}
+      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
+        <text
+          fg={abilitySummary(data()?.capabilities) === "none" ? theme().feedback.warning.base : theme().muted}
+          wrapMode="none"
+          truncate
+        >
+          token {abilitySummary(data()?.capabilities)}
+        </text>
+      </box>
+
+      {/* Applications: status light, name, state. */}
+      <box border={["top"]} borderColor={theme().muted} flexDirection="column">
+        <For each={rows()}>
+          {(app, index) => (
+            <box
+              flexDirection="row"
+              gap={1}
+              backgroundColor={hover() === index() ? surface().raised?.high : undefined}
+              onMouseOver={() => setHover(index())}
+              onMouseOut={() => setHover(null)}
+              onMouseUp={() => void props.onAppActions(app)}
+            >
+              <text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>
+              <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                {app.name}
+              </text>
+              <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+                {appRowState(app)}
+              </text>
+            </box>
+          )}
+        </For>
+
+        <Show when={hidden() > 0}>
+          <text fg={theme().muted} wrapMode="none" truncate onMouseUp={() => void props.onAllApps()}>
+            +{hidden()} more · show all
+          </text>
+        </Show>
+
+        <Show when={!failed() && data()?.connected && rows().length === 0}>
+          <text fg={theme().muted} wrapMode="none" truncate>
+            {data()?.configFile ? "not deployed" : "not deployed · no coolify.json"}
+          </text>
+        </Show>
+      </box>
+
+      {/* One entry point; the actions it lists each open their own popup. */}
+      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
+        <text fg={theme().feedback.info?.base ?? theme().base} wrapMode="none" truncate>
+          Configure
+        </text>
+      </box>
+    </box>
+  )
+}
+
+/**
+ * The plugin's own configuration, in one dedicated popup: what the instance is,
+ * whether the token works, and one button per setting.
+ */
+function SetupPopup(props: {
+  onSetEndpoint: () => Promise<void>
+  onSetToken: () => Promise<void>
+}) {
+  const context = usePlugin()
+  const rpc = context.client.rpc(CoolifyRpc)
+  const theme = () => context.theme.text
+  const action = () => theme().feedback.info?.base ?? theme().base
+
+  const [data, setData] = createSignal<CapabilitiesPayload | undefined>()
+
+  const load = async () => {
+    try {
+      setData((await rpc.capabilities({})) as CapabilitiesPayload)
+    } catch {
+      setData(undefined)
+    }
+  }
+
+  onMount(() => void load())
+
+  const close = () => context.ui.dialog.clear()
+
+  return (
+    <box flexDirection="column" gap={1} padding={1}>
+      <text attributes={TextAttributes.BOLD} fg={theme().base}>
+        Coolify instance
+      </text>
+
+      <box flexDirection="column">
+        <text fg={theme().muted} wrapMode="none" truncate>
+          endpoint  {data()?.endpoint ?? "not set"}
+        </text>
+        <text
+          fg={data()?.connected ? theme().feedback.success.base : theme().feedback.warning.base}
+          wrapMode="none"
+          truncate
+        >
+          token     {data()?.connected ? `connected · ${abilitySummary(data())}` : (data()?.message ?? "not connected")}
+        </text>
+      </box>
+
+      <box flexDirection="column">
+        <text fg={action()} wrapMode="none" truncate onMouseUp={() => void props.onSetEndpoint()}>
+          set instance url
+        </text>
+        <text fg={action()} wrapMode="none" truncate onMouseUp={() => void props.onSetToken()}>
+          set api token
+        </text>
+        <text fg={theme().muted} wrapMode="none" truncate onMouseUp={close}>
+          close
+        </text>
+      </box>
+    </box>
+  )
+}
+
+/** The team name, or a short form of the host when no team is readable. */
+function instanceHint(data: ApplicationsPayload | undefined): string {
+  if (data?.connected !== true) return data?.endpointConfigured ? "not connected" : "not configured"
+  const endpoint = data.endpoint
+  if (!endpoint) return "connected"
+  try {
+    return new URL(endpoint).host
+  } catch {
+    return endpoint
+  }
+}
+
+export function abilitySummary(capabilities: CapabilitiesPayload | undefined): string {
+  const probes = capabilities?.probes ?? {}
+  const order: ReadonlyArray<readonly [string, string]> = [
+    ["read", "read"],
+    ["write", "write"],
+    ["deploy", "deploy"],
+    ["read:sensitive", "secrets"],
+  ]
+  const granted = order.filter(([key]) => probes[key]?.status === "granted").map(([, label]) => label)
+  return granted.length > 0 ? granted.join(" ") : "none"
+}
+
+/**
+ * How long until the next automatic refresh: soon while a deployment is in
+ * flight, leisurely when nothing is happening.
+ */
+export function refreshSeconds(apps: readonly AppStatusPayload[]): number {
+  const active = apps.some((app) => {
+    const status = normalizeDeploymentStatus(app.latestDeployment?.status)
+    return status === "queued" || status === "in_progress"
+  })
+  return active ? REFRESH_SECONDS_ACTIVE : REFRESH_SECONDS_IDLE
+}
+
+export function appRowTone(app: AppStatusPayload): LineTone {
+  if (app.runtime && (app.runtime.state !== "unknown" || app.runtime.health !== "none")) {
+    return runtimeTone(app.runtime)
+  }
+  const status = (app.latestDeployment?.status ?? "").toLowerCase()
+  if (status === "") return "unknown"
+  if (status === "failed" || status === "error") return "bad"
+  if (status === "finished" || status === "success" || status === "succeeded") return "ok"
+  return "warn"
+}
+
+/**
+ * The compact state shown at the right of a row. Health is folded into the
+ * status light, so only an unhealthy container needs a marker of its own.
+ */
+export function appRowState(app: AppStatusPayload): string {
+  const runtime = app.runtime
+  if (runtime && (runtime.state !== "unknown" || runtime.health !== "none")) {
+    return runtime.health === "unhealthy" ? `${runtime.state} !` : runtime.state
+  }
+  return app.latestDeployment?.status ?? "not deployed"
+}
+
+/** The full, unabbreviated form, for dialogs and tool output. */
+export function appRowLabel(app: AppStatusPayload): string {
+  return `${app.name} · ${appRowState(app)}`
+}
+
+export function statusLight(tone: LineTone): string {
+  if (tone === "ok") return "●"
+  if (tone === "warn") return "◐"
+  if (tone === "bad") return "○"
+  if (tone === "muted") return "·"
+  return "◌"
+}
+
+function toneColour(
+  theme: { base: string; muted: string; feedback: { success: { base: string }; warning: { base: string }; error: { base: string } } },
+  tone: LineTone,
+): string {
+  if (tone === "ok") return theme.feedback.success.base
+  if (tone === "warn") return theme.feedback.warning.base
+  if (tone === "bad") return theme.feedback.error.base
+  return theme.muted
+}
+
+function slug(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+}
+
+function message(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
+}

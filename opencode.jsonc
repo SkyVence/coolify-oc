@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json"
+  // This plugin is installed globally, so it does not need a project entry here.
+  //
+  // Global install (recommended): the discovery layout in
+  //   ~/.config/opencode/plugins/opencode-coolify/{index.ts,tui.ts,package.json}
+  // makes both halves available in every project.
+  //
+  // Configuring it:
+  //   - endpoint: /coolify-endpoint in the TUI, or COOLIFY_ENDPOINT in the env
+  //   - token:    /coolify-connect  in the TUI
+  //
+  // Per-project alternative: uncomment the block below and drop the global
+  // install. Note that in OpenCode 2.0.10 a plugin listed only in the global
+  // opencode.jsonc is NOT loaded, which is why the discovery layout is used.
+  //
+  // "plugins": [
+  //   {
+  //     "package": ".",
+  //     "options": { "endpoint": "https://coolify.example.com" }
+  //   }
+  // ]
+}
