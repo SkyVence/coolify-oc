@@ -661,6 +661,15 @@ export default Plugin.define({
     async function configureProjectPayload(input: Record<string, unknown> | undefined) {
       const directory = nonEmpty(input?.directory) ?? ctx.location.directory
       const file = await configFileFor(directory)
+      if (!file) {
+        return {
+          ok: false,
+          file: "",
+          applications: 0,
+          databases: 0,
+          message: "This directory is not inside a git repository, so there is nowhere to write coolify.json.",
+        }
+      }
 
       const update: Parameters<typeof updateProjectConfig>[1] = {
         ...(nonEmpty(input?.projectUUID) ? { projectUUID: nonEmpty(input?.projectUUID)! } : {}),

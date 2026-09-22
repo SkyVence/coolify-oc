@@ -304,6 +304,13 @@ Placement is taken from coolify.json or the linked application when not given. T
       if (uuid && input?.record !== false) {
         try {
           const file = await configFileFor(deps.directory)
+          if (!file) {
+            lines.push(
+              "Not recorded: this directory is not inside a git repository, so there is nowhere to write coolify.json.",
+              `Application UUID: ${uuid} — record it manually if you want it mapped.`,
+            )
+            return { content: lines.join("\n"), metadata: { applicationUUID: uuid, recorded: false } }
+          }
           const config = await findProjectConfig(deps.directory)
           const key = applicationKey(config, uuid, baseDirectory, nonEmpty(input?.name))
           await updateProjectConfig(file, {
@@ -334,14 +341,23 @@ Placement is taken from coolify.json or the linked application when not given. T
   }
 }
 
-/** Where coolify.json lives: an existing one anywhere up the tree, else the repo root. */
-export async function configFileFor(directory: string): Promise<string> {
+/**
+ * Where `coolify.json` lives: an existing one anywhere up the tree, else the
+ * repository root.
+ *
+ * Returns `undefined` when the directory is not inside a repository. Falling
+ * back to the directory itself would scatter a stray config outside any repo —
+ * creating an application from a scratch session would drop one in `$HOME`.
+ */
+export async function configFileFor(directory: string): Promise<string | undefined> {
   const existing = await findProjectConfig(directory)
   if (existing) return existing.file
-  return join(await repoRoot(directory), "coolify.json")
+  const root = await repoRoot(directory)
+  return root === undefined ? undefined : join(root, "coolify.json")
 }
 
-async function repoRoot(directory: string): Promise<string> {
+/** The nearest ancestor holding a VCS marker, or `undefined` if there is none. */
+async function repoRoot(directory: string): Promise<string | undefined> {
   let current = resolvePath(directory)
   for (let depth = 0; depth < 64; depth += 1) {
     try {
@@ -349,11 +365,11 @@ async function repoRoot(directory: string): Promise<string> {
       return current
     } catch {
       const parent = resolvePath(current, "..")
-      if (parent === current) return current
+      if (parent === current) return undefined
       current = parent
     }
   }
-  return current
+  return undefined
 }
 
 /**
