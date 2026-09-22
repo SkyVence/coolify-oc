@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { normalizeEndpoint } from "../src/coolify/client"
 import type { CapabilityReport } from "../src/coolify/types"
+import { Coolify as CoolifyRpc } from "../src/rpc"
 import { capabilityKey } from "../src/store"
 import { makeFetch, memoryStore, report, type FakeRoute } from "./helpers"
 
@@ -341,6 +342,35 @@ describe("recursiveProjects toggle", () => {
     const h = await harness({ token: TOKEN, routes, options: { recursiveProjects: "true" } })
 
     expect((await h.handlers.applications({ scope: "mapped", directory })).recursiveProjects).toBe(false)
+    await h.cleanup()
+  })
+})
+
+describe("RPC output schema", () => {
+  // Handlers are invoked directly in these tests, so the runtime's output
+  // validation is bypassed. Comparing the returned keys against the declared
+  // schema keeps that shortcut from hiding a field the model would never see.
+  function declaredKeys(method: keyof typeof CoolifyRpc.methods): string[] {
+    const output = CoolifyRpc.methods[method].output as { properties?: Record<string, unknown> }
+    return Object.keys(output.properties ?? {})
+  }
+
+  it("declares every field the applications handler returns", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(join(directory, "coolify.json"), JSON.stringify({ applications: {} }), "utf8")
+    const h = await harness({ token: TOKEN })
+
+    const payload = await h.handlers.applications({ scope: "mapped", directory })
+
+    for (const key of Object.keys(payload)) expect(declaredKeys("applications")).toContain(key)
+    await h.cleanup()
+  })
+
+  it("declares every field the capabilities handler returns", async () => {
+    const h = await harness({ token: TOKEN })
+    const payload = await h.handlers.capabilities({})
+
+    for (const key of Object.keys(payload)) expect(declaredKeys("capabilities")).toContain(key)
     await h.cleanup()
   })
 })

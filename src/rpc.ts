@@ -135,6 +135,7 @@ export const Coolify = Rpc.define({
         configFile: string,
         scope: string,
         refreshSeconds: integer,
+        recursiveProjects: boolean,
         apps: { type: "array", items: unknownObject },
         projects: { type: "array", items: unknownObject },
         capabilities: capabilitiesSchema,
