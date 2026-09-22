@@ -342,6 +342,47 @@ export default Plugin.define({
     }
 
     /**
+     * Route `/coolify <aspect>` to the surface for that aspect.
+     *
+     * One command with arguments rather than a command per aspect: every one of
+     * these already exists behind the Configure picker, and a picker you must
+     * click through is the thing a command should skip. The two that write
+     * settings are deliberately *not* gated on `ensureConfigured` — being
+     * prompted for the endpoint while trying to set the endpoint is absurd.
+     */
+    async function runCoolifyCommand(input: string | undefined): Promise<void> {
+      const aspect = parseCoolifyArgument(input)
+      switch (aspect) {
+        case "instance":
+          await promptEndpoint()
+          return
+        case "token":
+          await promptToken()
+          return
+        case "access":
+          openSetupPopup()
+          return
+        case "link-model":
+          await linkWithModel()
+          return
+        case "unknown":
+          toast(`Unknown option. Try: ${COOLIFY_ASPECTS.join(", ")}.`, "warning")
+          return
+        case "hub":
+          await openConfigure(sessionDirectory())
+          return
+        case "deploy":
+        case "apps":
+        case "link":
+          // These need a working client, so they may prompt for one first.
+          if (!(await ensureConfigured())) return
+          if (aspect === "deploy") return await deployInSideChat(undefined)
+          if (aspect === "apps") return await openAllApps(sessionDirectory())
+          return await linkFlow(sessionDirectory())
+      }
+    }
+
+    /**
      * A dedicated popup for the plugin's own configuration, separate from
      * anything application-related. It shows the current state and offers one
      * button per setting, re-opening itself after each change so the result is
@@ -544,14 +585,14 @@ export default Plugin.define({
       commands: [
         {
           id: "coolify.panel.open",
-          title: "Coolify: actions",
+          title: "Coolify: configure or inspect",
+          description: `No argument opens the picker. Or name an aspect: ${COOLIFY_ASPECTS.join(", ")}.`,
           group: "Coolify",
           bind: false,
           palette: true,
-          slash: { name: "coolify", aliases: ["coolify-status", "coolify-setup"] },
-          run: async () => {
-            if (!(await ensureConfigured())) return
-            await openAllApps(sessionDirectory())
+          slash: { name: "coolify", aliases: ["coolify-status", "coolify-setup"], arguments: true },
+          run: async (input) => {
+            await runCoolifyCommand(input)
           },
         },
         {
@@ -945,6 +986,25 @@ function SetupPopup(props: {
   const action = () => theme().feedback.info?.base ?? theme().base
 
   const [data, setData] = createSignal<CapabilitiesPayload | undefined>()
+  const [refreshing, setRefreshing] = createSignal(false)
+
+  /**
+   * Re-probe rather than re-read: the report is cached for ten minutes, and
+   * "show me what this token can do" is exactly when the cached answer is the
+   * one thing you do not want.
+   */
+  const refreshAccess = async () => {
+    if (refreshing()) return
+    setRefreshing(true)
+    try {
+      setData((await rpc.refreshCapabilities({})) as CapabilitiesPayload)
+      context.ui.toast.show({ message: "Access re-checked.", variant: "success" })
+    } catch (cause) {
+      context.ui.toast.show({ message: `Could not re-check access: ${message(cause)}`, variant: "error" })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   /**
    * Five steps from no access to full access. Reds and greens come from the
@@ -1028,6 +1088,9 @@ function SetupPopup(props: {
         <text fg={action()} wrapMode="none" truncate onMouseUp={() => void props.onSetToken()}>
           set api token
         </text>
+        <text fg={action()} wrapMode="none" truncate onMouseUp={() => void refreshAccess()}>
+          {refreshing() ? "refreshing access…" : "refresh access"}
+        </text>
         <text fg={theme().muted} wrapMode="none" truncate onMouseUp={close}>
           close
         </text>
@@ -1084,6 +1147,68 @@ export function abilityEntries(capabilities: CapabilitiesPayload | undefined): r
  */
 export function accessLevel(capabilities: CapabilitiesPayload | undefined): number {
   return abilityEntries(capabilities).filter((entry) => entry.status === "granted").length
+}
+
+/** Where a `/coolify` invocation should land. */
+export type CoolifyAspect =
+  | "hub"
+  | "instance"
+  | "token"
+  | "access"
+  | "apps"
+  | "link"
+  | "link-model"
+  | "deploy"
+  | "unknown"
+
+/** The aspects `/coolify` accepts, in help order. */
+export const COOLIFY_ASPECTS = ["instance", "token", "access", "apps", "link", "link model", "deploy"] as const
+
+/**
+ * Route the text after `/coolify` to an aspect.
+ *
+ * Tolerant on purpose: with `arguments: true` the runtime may hand back the raw
+ * prompt text, so a leading `/coolify` (or a `/coolify-token` style alias) is
+ * stripped before matching, and the obvious synonyms are accepted. An
+ * unrecognised word is reported rather than quietly opening the hub — a typo
+ * that silently does something else is worse than one that says it did not
+ * understand.
+ */
+export function parseCoolifyArgument(input: string | undefined): CoolifyAspect {
+  const rest = (input ?? "")
+    .trim()
+    .replace(/^\/?coolify[-:\s]*/i, "")
+    .trim()
+    .toLowerCase()
+  if (rest === "") return "hub"
+
+  const [first, second] = rest.split(/\s+/)
+  switch (first) {
+    case "instance":
+    case "url":
+    case "endpoint":
+      return "instance"
+    case "token":
+    case "key":
+      return "token"
+    case "access":
+    case "status":
+    case "capabilities":
+      return "access"
+    case "apps":
+    case "applications":
+    case "all":
+      return "apps"
+    case "deploy":
+      return "deploy"
+    case "model":
+      return "link-model"
+    case "link":
+    case "map":
+      return second === "model" || second === "with-model" ? "link-model" : "link"
+    default:
+      return "unknown"
+  }
 }
 
 /** Applications already resolved for this directory, or a config on disk. */

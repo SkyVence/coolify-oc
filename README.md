@@ -44,9 +44,29 @@ OpenCode 2.0.10 does not load plugins listed only in the global
 
 | Command | What it does |
 | --- | --- |
-| `/coolify` | Opens the sidebar actions: map this project, map with the model, set up instance, show every application. |
+| `/coolify` | Opens the configure picker. |
+| `/coolify <aspect>` | Goes straight to one aspect — see below. |
 | `/coolify-map` | Resolves this repository against Coolify and writes `coolify.json`. No model turn. |
 | `/coolify-deploy` | Deploys in a **background tab**, so the current conversation keeps running. |
+
+`/coolify` takes an argument rather than adding a command per setting, because
+every one of these already exists behind the picker — and a picker you have to
+click through is the thing a command should skip:
+
+| Aspect | What it opens |
+| --- | --- |
+| `/coolify instance` | Prompt for the instance URL. `url` and `endpoint` also work. |
+| `/coolify token` | Prompt for the API token. `key` also works. |
+| `/coolify access` | The instance and access popup, with a **refresh access** action that re-probes rather than re-reading the ten-minute cache. |
+| `/coolify apps` | Every application on the instance. |
+| `/coolify link` | Link this project deterministically. |
+| `/coolify link model` | Link in a background tab, for a monorepo or an ambiguous match. |
+| `/coolify deploy` | Deploy in a background tab. |
+
+`instance`, `token`, `access` and the picker itself are deliberately *not* gated
+on being configured — being asked for the endpoint while setting the endpoint
+would be absurd. `apps`, `link` and `deploy` are gated, because they need a
+working client. A typo is reported rather than quietly opening the picker.
 
 The sidebar shows the instance, the working directory it is answering for, and
 one row per application with a status light, a compact state and a refresh

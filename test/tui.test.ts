@@ -10,6 +10,7 @@ import {
   appRowTone,
   isLinked,
   markStartingUp,
+  parseCoolifyArgument,
   projectGroupHeading,
   reconcileStartingUp,
   refreshSeconds,
@@ -32,6 +33,7 @@ function mockContext() {
   const sessionCreates: any[] = []
   const tabOpens: string[] = []
   const selects: any[] = []
+  const prompts: any[] = []
   const configWrites: any[] = []
   const resolveCalls: any[] = []
 
@@ -113,7 +115,10 @@ function mockContext() {
       dialog: {
         alert: async () => {},
         confirm: async () => confirmAnswer,
-        prompt: async () => (promptAnswers.length > 0 ? promptAnswers.shift() : undefined),
+        prompt: async (options: any) => {
+          prompts.push(options)
+          return promptAnswers.length > 0 ? promptAnswers.shift() : undefined
+        },
         select: async (options: any) => {
           selects.push(options)
           return selectAnswer
@@ -163,6 +168,7 @@ function mockContext() {
     sessionCreates,
     tabOpens,
     selects,
+    prompts,
     configWrites,
     resolveCalls,
     commands,
@@ -282,20 +288,64 @@ describe("tui plugin", () => {
     expect(harness.sessionPrompts.at(-1)?.sessionID).toBe("ses_current")
   })
 
-  it("prompts for endpoint and token before opening when unconfigured", async () => {
+  it("opens the picker while unconfigured, because that is where setup lives", async () => {
     const harness = mockContext()
-    harness.setPrompt("https://coolify.example.com")
     const plugin = await loadPlugin()
     await plugin.setup(harness.context as any)
 
-    // An unconfigured endpoint is reported by capabilities; emulate that.
     const rpcCapabilities = harness.context.client.rpc() as any
     rpcCapabilities.capabilities = async () => ({ connected: false, endpointConfigured: false })
 
     await find(harness, "coolify.panel.open").run()
 
+    // A select, not a prompt: configuring must not be gated behind being
+    // configured, or there would be no way in.
+    expect(harness.selects).toHaveLength(1)
+    expect(harness.prompts).toHaveLength(0)
+  })
+
+  it("still gates the aspects that need a working client", async () => {
+    const harness = mockContext()
+    harness.setPrompt(undefined)
+    const plugin = await loadPlugin()
+    await plugin.setup(harness.context as any)
+
+    const rpcCapabilities = harness.context.client.rpc() as any
+    rpcCapabilities.capabilities = async () => ({ connected: false, endpointConfigured: false })
+
+    await find(harness, "coolify.panel.open").run("apps")
+
+    // The endpoint prompt was cancelled, so nothing opened.
+    expect(harness.prompts).toHaveLength(1)
     expect(harness.selects).toHaveLength(0)
-    expect(harness.connectCalls).toHaveLength(0)
+  })
+
+  it("sets the endpoint from an aspect without needing a connection", async () => {
+    const harness = mockContext()
+    harness.setPrompt("https://coolify.example.com")
+    const plugin = await loadPlugin()
+    await plugin.setup(harness.context as any)
+
+    const rpcCapabilities = harness.context.client.rpc() as any
+    rpcCapabilities.capabilities = async () => ({ connected: false, endpointConfigured: false })
+
+    await find(harness, "coolify.panel.open").run("instance")
+
+    // Straight to the endpoint prompt: being asked for the endpoint while
+    // setting the endpoint would be absurd.
+    expect(harness.prompts).toHaveLength(1)
+    expect(harness.prompts[0].title).toContain("instance")
+  })
+
+  it("warns on a typo instead of silently opening the picker", async () => {
+    const harness = mockContext()
+    const plugin = await loadPlugin()
+    await plugin.setup(harness.context as any)
+
+    await find(harness, "coolify.panel.open").run("instnace")
+
+    expect(harness.selects).toHaveLength(0)
+    expect(harness.toasts.at(-1)?.message).toContain("Unknown option")
   })
 })
 
@@ -614,5 +664,45 @@ describe("isLinked", () => {
     expect(isLinked(payload({ configFile: "/repo/coolify.json" }))).toBe(true)
     expect(isLinked(payload({ apps: [{ name: "web" }] }))).toBe(true)
     expect(isLinked(payload({ projects: [{ apps: [{ name: "web" }] }] }))).toBe(true)
+  })
+})
+
+describe("parseCoolifyArgument", () => {
+  it("opens the picker with no argument", () => {
+    expect(parseCoolifyArgument(undefined)).toBe("hub")
+    expect(parseCoolifyArgument("")).toBe("hub")
+    expect(parseCoolifyArgument("   ")).toBe("hub")
+    expect(parseCoolifyArgument("/coolify")).toBe("hub")
+    expect(parseCoolifyArgument("coolify")).toBe("hub")
+  })
+
+  it("routes each aspect, with or without the command name attached", () => {
+    // The runtime may hand back the raw prompt text, so both shapes must work.
+    expect(parseCoolifyArgument("instance")).toBe("instance")
+    expect(parseCoolifyArgument("/coolify instance")).toBe("instance")
+    expect(parseCoolifyArgument("coolify-token")).toBe("token")
+    expect(parseCoolifyArgument("access")).toBe("access")
+    expect(parseCoolifyArgument("apps")).toBe("apps")
+    expect(parseCoolifyArgument("deploy")).toBe("deploy")
+    expect(parseCoolifyArgument("link")).toBe("link")
+  })
+
+  it("treats the second word of link as the method", () => {
+    expect(parseCoolifyArgument("link model")).toBe("link-model")
+    expect(parseCoolifyArgument("coolify link with-model")).toBe("link-model")
+    expect(parseCoolifyArgument("model")).toBe("link-model")
+  })
+
+  it("accepts the obvious synonyms", () => {
+    expect(parseCoolifyArgument("url")).toBe("instance")
+    expect(parseCoolifyArgument("endpoint")).toBe("instance")
+    expect(parseCoolifyArgument("key")).toBe("token")
+    expect(parseCoolifyArgument("status")).toBe("access")
+    expect(parseCoolifyArgument("map")).toBe("link")
+  })
+
+  it("reports a typo instead of quietly opening the picker", () => {
+    expect(parseCoolifyArgument("instnace")).toBe("unknown")
+    expect(parseCoolifyArgument("coolify wat")).toBe("unknown")
   })
 })
