@@ -11,6 +11,14 @@
     "deploy",
     "paas"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SkyVence/coolify-oc.git"
+  },
+  "homepage": "https://github.com/SkyVence/coolify-oc#readme",
+  "bugs": {
+    "url": "https://github.com/SkyVence/coolify-oc/issues"
+  },
   "publishConfig": {
     "access": "public"
   },

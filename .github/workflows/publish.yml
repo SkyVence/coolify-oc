@@ -10,7 +10,21 @@ on:
       - "v*"
 
 jobs:
+  # Without NPM_TOKEN configured this workflow has nothing it can do, and a tag
+  # push should not leave a red X on the repository.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo "enabled=${{ env.TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: guard
+    if: needs.guard.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
