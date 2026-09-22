@@ -13,9 +13,13 @@ mkdir -p plugins/coolify-oc
 printf 'export { default } from "@skyvence/coolify-oc"\n'     > plugins/coolify-oc/index.ts
 printf 'export { default } from "@skyvence/coolify-oc/tui"\n' > plugins/coolify-oc/tui.ts
 cat > plugins/coolify-oc/package.json <<'EOF'
-{ "name": "@skyvence/coolify-oc", "type": "module", "exports": { ".": "./index.ts", "./tui": "./tui.ts" } }
+{ "name": "coolify-oc-discovery", "type": "module", "exports": { ".": "./index.ts", "./tui": "./tui.ts" } }
 EOF
 ```
+
+> The shim's `name` must **not** be `@skyvence/coolify-oc`. A package that
+> imports a specifier matching its own name resolves to *itself*, so the shim
+> would import the shim. Any other name works; this one is only a label.
 
 Restart the TUI, run `/coolify`, choose **Set up instance**, and enter your
 Coolify URL and API token.
