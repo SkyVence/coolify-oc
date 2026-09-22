@@ -9,6 +9,8 @@
   // Configuring it:
   //   - endpoint: /coolify-endpoint in the TUI, or COOLIFY_ENDPOINT in the env
   //   - token:    /coolify-connect  in the TUI
+  //   - refreshSeconds: idle sidebar poll cadence in seconds (5-600, default 25),
+  //     only settable through the per-project options block below.
   //
   // Per-project alternative: uncomment the block below and drop the global
   // install. Note that in OpenCode 2.0.10 a plugin listed only in the global

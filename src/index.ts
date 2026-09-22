@@ -23,6 +23,7 @@ import {
   type CoolifyDeployment,
 } from "./coolify/types"
 import { parseApplicationStatus } from "./coolify/runtime"
+import { parseRefreshSeconds } from "./options"
 import { findProjectConfig, selectApplication, updateProjectConfig } from "./project-config"
 import { configFileFor } from "./tools/create"
 import { asApplicationMap, asDatabaseMap, nonEmpty } from "./tools/shared"
@@ -54,6 +55,9 @@ export default Plugin.define({
     let settings = await readSettings(store)
 
     let normalizedEndpoint = normalizeOrUndefined(readEndpoint(ctx.options) ?? settings.endpoint)
+
+    /** Idle sidebar cadence, chosen by the `refreshSeconds` option. */
+    const refreshSeconds = parseRefreshSeconds(ctx.options.refreshSeconds)
 
     /** How long a capability report is trusted without a fresh probe. */
     const CAPABILITY_TTL_MS = 10 * 60 * 1_000
@@ -496,7 +500,7 @@ export default Plugin.define({
      */
     async function applicationsPayload(scope: string | undefined, directory?: string): Promise<ApplicationsPayload> {
       const mode: "mapped" | "project" = scope === "project" ? "project" : "mapped"
-      if (!client) return { scope: mode, apps: [], ...capabilitiesPayload() }
+      if (!client) return { scope: mode, refreshSeconds, apps: [], ...capabilitiesPayload() }
 
       // The RPC `location` option is not honoured, so the caller states which
       // project directory it means. Without it the server would answer for its
@@ -582,6 +586,7 @@ export default Plugin.define({
         ...(config?.environmentName ? { environmentName: config.environmentName } : {}),
         ...(config ? { configFile: config.file } : {}),
         scope: mode,
+        refreshSeconds,
         apps,
         capabilities: capabilitiesPayload(),
       }
