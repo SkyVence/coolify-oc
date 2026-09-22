@@ -429,6 +429,14 @@ Configure
   red when denied, grey when unknown — and the `token` label takes the tone of
   the whole line: green when all four are granted, amber when some are, red when
   none are.
+- **Every `coolify.json` in the repository gets its own section.** If a repo has
+  more than one — say `coolify.json` at the root and `apps/web/coolify.json` —
+  the sidebar renders a section per config, headed by its repo-relative
+  directory, each with its own rows and its own `show all`. Discovery walks down
+  from the repository root, bounded to four levels, skipping `node_modules`,
+  `.git`, `dist`, `build`, `.next`, `coverage`, `.turbo` and `vendor`, and never
+  following symlinks. A malformed config is skipped rather than fatal. With a
+  single config the section heading is omitted and it renders exactly as before.
 - **Application rows** put the name and the state in separate elements, so a
   long name ellipsises without ever eating the state. The state is compact —
   `running`, `exited`, `not deployed` — and an unhealthy container is marked
