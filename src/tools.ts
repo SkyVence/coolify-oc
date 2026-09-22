@@ -228,7 +228,7 @@ function linkTool(deps: ToolDeps): ToolSpec {
     name: "link",
     tier: "write",
     description:
-      "Pin a Coolify application to this project so future calls resolve it automatically. Use this when the user names an application or when resolution is ambiguous.",
+      "Pin one Coolify application to this project so future calls resolve it automatically, without touching coolify.json. Use this when the user names an application or when resolution is ambiguous. To discover which applications exist and record the mapping in coolify.json, use the `coolify-link` skill instead.",
     input: {
       type: "object",
       properties: {

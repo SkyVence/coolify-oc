@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { COOLIFY_SKILLS } from "../src/skills"
 import {
   STARTING_MIN_SPIN_MS,
   STARTING_TIMEOUT_MS,
@@ -255,6 +256,9 @@ describe("tui plugin", () => {
     // The instructions travel as a skill reference, not a pasted prompt, so the
     // same skill serves a client that exposes skills but not plugin tools.
     expect(harness.sessionPrompts[0].skills).toEqual([{ id: "coolify-deploy" }])
+    // The reference must name a registered skill: an unregistered id makes the
+    // runtime throw "skill not found" rather than degrading.
+    expect(COOLIFY_SKILLS.map((skill) => skill.id)).toContain(harness.sessionPrompts[0].skills[0].id)
     expect(harness.sessionPrompts[0].text).toContain("deploy")
 
     // The new session is opened in a tab — and `open` does not steal focus.
@@ -692,7 +696,11 @@ describe("parseCoolifyArgument", () => {
     expect(parseCoolifyArgument("endpoint")).toBe("instance")
     expect(parseCoolifyArgument("key")).toBe("token")
     expect(parseCoolifyArgument("status")).toBe("access")
-    expect(parseCoolifyArgument("map")).toBe("link")
+  })
+
+  it("no longer accepts the vocabulary it was renamed away from", () => {
+    expect(parseCoolifyArgument("map")).toBe("unknown")
+    expect(parseCoolifyArgument("map model")).toBe("unknown")
   })
 
   it("reports a typo instead of quietly opening the picker", () => {
