@@ -87,7 +87,7 @@ tools can use them too:
 | `coolify-deploy` | Set up and deploy the project: application settings, databases, domain, port. |
 
 Both appear in the model's skill guidance and can be loaded with the `skill`
-tool. The sidebar's deploy and map actions reference them rather than pasting
+tool. The sidebar's deploy and link actions reference them rather than pasting
 instructions, so there is one copy of each.
 
 `/coolify link` and the `coolify-link` skill are deliberately different tools:
@@ -114,7 +114,7 @@ The API token is stored by OpenCode as a credential, never in configuration.
 
 ## `coolify.json`
 
-Commit this at a repository root to map the repo — and each package in a
+Commit this at a repository root to link the repo — and each package in a
 monorepo — to Coolify resources:
 
 ```jsonc
