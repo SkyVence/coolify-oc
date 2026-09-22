@@ -51,10 +51,15 @@ OpenCode 2.0.10 does not load plugins listed only in the global
 The sidebar shows the instance, the working directory it is answering for, and
 one row per application with a status light, a compact state and a refresh
 countdown. Clicking a row offers Deploy, Logs, Restart and Roll back. An
-unmapped project shows a `map` link beside it: the first click maps with the
-model in a background tab, a second click opens a paste box for a
-`coolify.json` you supply yourself. The token's level of access lives in
-**Configure**, next to the instance it describes.
+unlinked project shows a `link` action beside it: the first click links with
+the model in a background tab, a second click opens a paste box for a
+`coolify.json` you supply yourself.
+
+**Configure** is the entry point for linking a project and for fixing the
+instance, so it is hidden once the instance answers *and* the project is
+already linked — there is nothing left behind it but a redundant re-link. It
+reappears as soon as either half breaks, which is also when the token's level
+of access, shown inside it, is worth reading.
 
 ## Skills
 
@@ -63,17 +68,18 @@ tools can use them too:
 
 | Skill | What it does |
 | --- | --- |
-| `coolify-map` | Inspect the repository and record its Coolify mapping in `coolify.json`. |
+| `coolify-link` | Link the repository to its existing Coolify applications and record the result in `coolify.json`. |
 | `coolify-deploy` | Set up and deploy the project: application settings, databases, domain, port. |
 
 Both appear in the model's skill guidance and can be loaded with the `skill`
 tool. The sidebar's deploy and map actions reference them rather than pasting
 instructions, so there is one copy of each.
 
-The `/coolify-map` command and the `coolify-map` skill are deliberately
+The `/coolify-map` command and the `coolify-link` skill are deliberately
 different tools: the command is the deterministic path, matching this directory
 against Coolify with no model turn, while the skill is the model-driven path for
-a monorepo or an ambiguous match.
+a monorepo or an ambiguous match. The command keeps its `/coolify-map` handle,
+but its palette label says `link` like everything else you read.
 
 ## Configuration
 

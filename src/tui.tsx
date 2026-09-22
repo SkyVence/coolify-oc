@@ -6,7 +6,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { normalizeDeploymentStatus } from "./coolify/deploy"
 import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
 import { DEFAULT_REFRESH_SECONDS } from "./options"
-import { DEPLOY_SKILL, MAP_SKILL, type CoolifySkill } from "./skills"
+import { DEPLOY_SKILL, LINK_SKILL, type CoolifySkill } from "./skills"
 import {
   Coolify as CoolifyRpc,
   type ApplicationsPayload,
@@ -67,13 +67,13 @@ export default Plugin.define({
      */
     let allAppsCache: { at: number; directory: string | undefined; apps: readonly AppStatusPayload[] } | undefined
     /**
-     * Directories whose model-driven mapping has already been attempted.
+     * Directories whose model-driven linking has already been attempted.
      *
      * A side chat is fire-and-forget: the plugin cannot await its result, so
      * "the model failed" cannot be observed directly. A second click on the
-     * same still-unmapped project is the signal, and it opens the paste box.
+     * same still-unlinked project is the signal, and it opens the paste box.
      */
-    const modelMapAttempts = new Set<string>()
+    const modelLinkAttempts = new Set<string>()
 
     const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "info") =>
       context.ui.toast.show({ message, variant })
@@ -188,7 +188,7 @@ export default Plugin.define({
      */
     /**
      * Open a side conversation in a background tab, or fall back to this chat
-     * when tabs are disabled. Used for both deploy and "map with the model", so
+     * when tabs are disabled. Used for both deploy and "link with the model", so
      * neither needs a session to already be open.
      *
      * The instructions travel as a skill reference rather than a pasted prompt:
@@ -243,24 +243,24 @@ export default Plugin.define({
       await runInSideChat(app ? `Deploy ${app.name}` : "Coolify deploy", DEPLOY_SKILL, text)
     }
 
-    /** The model-driven mapping: needed for a monorepo, or when nothing matches. */
-    async function mapWithModel(): Promise<boolean> {
-      return await runInSideChat("Map repository", MAP_SKILL, "Map this repository's Coolify applications.")
+    /** The model-driven linking: needed for a monorepo, or when nothing matches. */
+    async function linkWithModel(): Promise<boolean> {
+      return await runInSideChat("Link repository", LINK_SKILL, "Link this repository to its Coolify applications.")
     }
 
     /**
-     * The `map` button beside an unmapped project: try the model first, then
+     * The `link` button beside an unlinked project: try the model first, then
      * fall back to asking the user to paste the config the model produced.
      */
-    async function mapFirst(directory: string | undefined): Promise<void> {
+    async function linkFirst(directory: string | undefined): Promise<void> {
       const key = directory ?? ""
-      if (modelMapAttempts.has(key)) {
+      if (modelLinkAttempts.has(key)) {
         await promptForProjectJson(directory)
         return
       }
-      if (!(await mapWithModel())) return
-      modelMapAttempts.add(key)
-      toast("If the model could not map it, click map again to paste the config yourself.", "info")
+      if (!(await linkWithModel())) return
+      modelLinkAttempts.add(key)
+      toast("If the model could not link it, click link again to paste the config yourself.", "info")
     }
 
     /**
@@ -304,7 +304,7 @@ export default Plugin.define({
           message?: string
         }
         if (result.ok === true) {
-          toast(`Mapped this project in ${result.file}.`, "success")
+          toast(`Linked this project in ${result.file}.`, "success")
           sidebarControls?.refresh()
         } else {
           toast(result.message ?? "Could not write coolify.json.", "error")
@@ -315,7 +315,7 @@ export default Plugin.define({
     }
 
     /**
-     * The deterministic mapping: resolve the candidates for this directory, let
+     * The deterministic linking: resolve the candidates for this directory, let
      * the user pick, and write `coolify.json` directly. No model turn, and no
      * session required.
      */
@@ -327,15 +327,15 @@ export default Plugin.define({
       const choice = await context.ui.dialog.select<string>({
         title: "Coolify configuration",
         options: [
-          { title: "Map this project", value: "map", description: "write coolify.json directly — no model" },
-          { title: "Map with the model", value: "map-model", description: "background tab, for a monorepo" },
+          { title: "Link this project", value: "link", description: "write coolify.json directly — no model" },
+          { title: "Link with the model", value: "link-model", description: "background tab, for a monorepo" },
           { title: "Set up instance", value: "setup", description: "instance URL and API token" },
         ],
       })
       if (!choice) return
-      if (choice === "map") return await mapFlow(directory)
-      if (choice === "map-model") {
-        await mapWithModel()
+      if (choice === "link") return await linkFlow(directory)
+      if (choice === "link-model") {
+        await linkWithModel()
         return
       }
       openSetupPopup()
@@ -363,7 +363,7 @@ export default Plugin.define({
       ))
     }
 
-    async function mapFlow(directory: string | undefined): Promise<void> {
+    async function linkFlow(directory: string | undefined): Promise<void> {
       const state = await currentCapabilities()
       if (state?.connected !== true) {
         toast("Connect an API token first.", "warning")
@@ -382,9 +382,9 @@ export default Plugin.define({
 
       if (resolution.candidates.length === 0) {
         const typed = await context.ui.dialog.prompt({
-          title: "Map this repository",
+          title: "Link this repository",
           description:
-            resolution.notes.join(" ") || "No application matched. Paste an application UUID to map it.",
+            resolution.notes.join(" ") || "No application matched. Paste an application UUID to link it.",
           placeholder: "application UUID",
         })
         if (!typed?.trim()) return
@@ -392,9 +392,9 @@ export default Plugin.define({
       } else if (resolution.candidates.length === 1) {
         const only = resolution.candidates[0]!
         const confirmed = await context.ui.dialog.confirm({
-          title: "Map this repository",
-          message: `Map this project to ${only.name} (${only.applicationUUID})?`,
-          label: { confirm: "Map", cancel: "Cancel" },
+          title: "Link this repository",
+          message: `Link this project to ${only.name} (${only.applicationUUID})?`,
+          label: { confirm: "Link", cancel: "Cancel" },
         })
         if (!confirmed) return
         chosen = only
@@ -421,8 +421,8 @@ export default Plugin.define({
           ...(resolution.config?.environmentName ? { environmentName: resolution.config.environmentName } : {}),
           applications: { [slug(chosen.name) || "default"]: { applicationUUID: chosen.applicationUUID, name: chosen.name } },
         })) as { ok?: boolean; file?: string; message?: string }
-        if (result.ok === true) toast(`Mapped ${chosen.name} in ${result.file}.`, "success")
-        else toast(result.message ?? "Could not map this project.", "error")
+        if (result.ok === true) toast(`Linked ${chosen.name} in ${result.file}.`, "success")
+        else toast(result.message ?? "Could not link this project.", "error")
       } catch (cause) {
         toast(`Could not write coolify.json: ${message(cause)}`, "error")
       }
@@ -438,7 +438,7 @@ export default Plugin.define({
     }
 
     /**
-     * App-level actions only. Project-level concerns (mapping, instance) live on
+     * App-level actions only. Project-level concerns (linking, instance) live on
      * their own dedicated buttons, so this dialog never mixes the two.
      */
     async function openAppActions(app: AppStatusPayload): Promise<void> {
@@ -492,7 +492,7 @@ export default Plugin.define({
 
     /**
      * Every application in the project, for when the sidebar list is truncated
-     * or an app is not mapped to this repository yet.
+     * or an app is not linked to this repository yet.
      */
     async function openAllApps(directory: string | undefined): Promise<void> {
       const ALL_APPS_TTL_MS = 10_000
@@ -556,14 +556,14 @@ export default Plugin.define({
         },
         {
           id: "coolify.map",
-          title: "Coolify: map this project",
+          title: "Coolify: link this project",
           group: "Coolify",
           bind: false,
           palette: true,
           slash: { name: "coolify-map" },
           run: async () => {
             if (!(await ensureConfigured())) return
-            await mapFlow(sessionDirectory())
+            await linkFlow(sessionDirectory())
           },
         },
         {
@@ -598,7 +598,7 @@ export default Plugin.define({
           onAppActions={openAppActions}
           onAllApps={() => openAllApps(sessionDirectory())}
           onConfigure={() => void openConfigure(sessionDirectory())}
-          onMapFirst={() => mapFirst(sessionDirectory())}
+          onMapFirst={() => linkFirst(sessionDirectory())}
           onReady={(controls) => {
             sidebarControls = controls
           }}
@@ -649,6 +649,7 @@ function CoolifySidebar(props: {
   const isStarting = (app: AppStatusPayload): boolean =>
     starting().some((entry) => entry.applicationUUID === app.applicationUUID)
   const groups = createMemo(() => applicationGroups(data()))
+  const configureVisible = createMemo(() => shouldShowConfigure(data()))
 
   /**
    * Resolved the same way as the server-side helper. There is deliberately no
@@ -852,7 +853,7 @@ function CoolifySidebar(props: {
                   <text fg={theme().muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {group.configFile ? "not deployed" : "not deployed · no coolify.json"}
                   </text>
-                  {/* The one action that makes sense for an unmapped project,
+                  {/* The one action that makes sense for an unlinked project,
                       and the only place the sidebar offers one inline. */}
                   <text
                     fg={theme().feedback.info?.base ?? theme().base}
@@ -860,7 +861,7 @@ function CoolifySidebar(props: {
                     flexShrink={0}
                     onMouseUp={() => void props.onMapFirst()}
                   >
-                    map
+                    link
                   </text>
                 </box>
               </Show>
@@ -869,12 +870,14 @@ function CoolifySidebar(props: {
         </For>
       </box>
 
-      {/* One entry point; the actions it lists each open their own popup. */}
-      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
-        <text fg={theme().feedback.info?.base ?? theme().base} wrapMode="none" truncate>
-          Configure
-        </text>
-      </box>
+      {/* One entry point, and only while it has something to offer. */}
+      <Show when={configureVisible()}>
+        <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
+          <text fg={theme().feedback.info?.base ?? theme().base} wrapMode="none" truncate>
+            Configure
+          </text>
+        </box>
+      </Show>
     </box>
   )
 }
@@ -1081,6 +1084,28 @@ export function abilityEntries(capabilities: CapabilitiesPayload | undefined): r
  */
 export function accessLevel(capabilities: CapabilitiesPayload | undefined): number {
   return abilityEntries(capabilities).filter((entry) => entry.status === "granted").length
+}
+
+/** Applications already resolved for this directory, or a config on disk. */
+export function isLinked(payload: ApplicationsPayload | undefined): boolean {
+  if (payload === undefined) return false
+  if (payload.configFile !== undefined) return true
+  if ((payload.apps ?? []).length > 0) return true
+  return (payload.projects ?? []).some((project) => project.apps.length > 0)
+}
+
+/**
+ * Whether the Configure entry point is worth showing.
+ *
+ * It exists to link an unlinked project and to fix the instance, so once the
+ * instance answers and the project is already linked there is nothing behind it
+ * but a redundant re-link. Hidden then, it reappears the moment either half
+ * breaks — which is also when the token's access detail, shown inside it, is
+ * worth reading.
+ */
+export function shouldShowConfigure(payload: ApplicationsPayload | undefined): boolean {
+  if (payload?.connected !== true) return true
+  return !isLinked(payload)
 }
 
 /** A restarted application the sidebar should mark as coming back up. */

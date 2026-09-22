@@ -18,12 +18,12 @@ export interface CoolifySkill {
   readonly content: string
 }
 
-export const MAP_SKILL: CoolifySkill = {
-  id: "coolify-map",
-  name: "Coolify map",
+export const LINK_SKILL: CoolifySkill = {
+  id: "coolify-link",
+  name: "Coolify link",
   description:
-    "Record this repository's Coolify mapping in coolify.json, using the coolify tools. Use when the project is not linked to Coolify, when coolify.json is missing or wrong, or for a monorepo where several applications need mapping.",
-  content: `Inspect this repository and record its Coolify mapping in \`coolify.json\`, using the \`coolify\` tools.
+    "Link this repository to its existing Coolify applications and record the result in coolify.json, using the coolify tools. Use when the project is not linked to Coolify, when coolify.json is missing or wrong, or for a monorepo where several applications need linking.",
+  content: `Inspect this repository and link it to its existing Coolify applications, recording the result in \`coolify.json\` with the \`coolify\` tools.
 
 Ask before writing anything, and never invent a UUID.
 
@@ -73,7 +73,7 @@ Ask me whenever something is ambiguous — do not guess, and do not provision an
 6. Call \`coolify_deploy\` and report the final status. Deploy any database you created too.`,
 }
 
-export const COOLIFY_SKILLS: readonly CoolifySkill[] = [MAP_SKILL, DEPLOY_SKILL]
+export const COOLIFY_SKILLS: readonly CoolifySkill[] = [LINK_SKILL, DEPLOY_SKILL]
 
 /**
  * Where a registered skill claims to live. Nothing is read from here — the

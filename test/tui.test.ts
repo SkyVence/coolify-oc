@@ -8,10 +8,12 @@ import {
   appRowLabel,
   appRowState,
   appRowTone,
+  isLinked,
   markStartingUp,
   projectGroupHeading,
   reconcileStartingUp,
   refreshSeconds,
+  shouldShowConfigure,
   statusLight,
 } from "../src/tui"
 
@@ -570,5 +572,47 @@ describe("application rows", () => {
     const row = app({ runtime: { state: "running", health: "unhealthy", label: "running (unhealthy)", raw: "running:unhealthy" } })
     expect(appRowState(row)).toBe("running !")
     expect(appRowTone(row)).toBe("warn")
+  })
+})
+
+describe("shouldShowConfigure", () => {
+  // Partial payloads on purpose: the rule only reads `connected`, `configFile`,
+  // `apps` and `projects`, and a full AppStatusPayload would be noise here.
+  const payload = (over: any = {}) => ({ connected: true, apps: [], ...over }) as any
+
+  it("shows while the instance cannot be reached", () => {
+    // Including the not-yet-configured case, which is how you set it up at all.
+    expect(shouldShowConfigure(payload({ connected: false }))).toBe(true)
+    expect(shouldShowConfigure(undefined)).toBe(true)
+  })
+
+  it("hides once the instance answers and the project is linked", () => {
+    expect(shouldShowConfigure(payload({ configFile: "/repo/coolify.json", apps: [{ name: "web" }] }))).toBe(false)
+  })
+
+  it("hides when applications resolved without a config file", () => {
+    // A pinned link in the store resolves rows with no coolify.json on disk.
+    expect(shouldShowConfigure(payload({ apps: [{ name: "web" }] }))).toBe(false)
+  })
+
+  it("hides when only a recursive group has applications", () => {
+    expect(shouldShowConfigure(payload({ projects: [{ apps: [{ name: "web" }] }] }))).toBe(false)
+  })
+
+  it("shows when connected but nothing is linked yet", () => {
+    expect(shouldShowConfigure(payload())).toBe(true)
+    expect(shouldShowConfigure(payload({ projects: [{ apps: [] }] }))).toBe(true)
+  })
+})
+
+describe("isLinked", () => {
+  const payload = (over: any = {}) => ({ connected: true, apps: [], ...over }) as any
+
+  it("counts a config file, resolved apps, or a group with apps", () => {
+    expect(isLinked(undefined)).toBe(false)
+    expect(isLinked(payload())).toBe(false)
+    expect(isLinked(payload({ configFile: "/repo/coolify.json" }))).toBe(true)
+    expect(isLinked(payload({ apps: [{ name: "web" }] }))).toBe(true)
+    expect(isLinked(payload({ projects: [{ apps: [{ name: "web" }] }] }))).toBe(true)
   })
 })

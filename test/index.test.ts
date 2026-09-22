@@ -436,7 +436,7 @@ describe("skills", () => {
     const h = await harness({ token: TOKEN })
 
     const ids = h.skills.map((skill: any) => skill.id)
-    expect(ids).toEqual(["coolify-map", "coolify-deploy"])
+    expect(ids).toEqual(["coolify-link", "coolify-deploy"])
     await h.cleanup()
   })
 
