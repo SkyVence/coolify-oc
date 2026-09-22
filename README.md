@@ -95,11 +95,9 @@ the aspect is the deterministic path, matching this directory against Coolify
 with no model turn, while the skill is the model-driven path for a monorepo or
 an ambiguous match. The sidebar's `link` action uses the skill.
 
-## Naming
+## Names
 
-Every name in this plugin — tools, skills, permission tiers, the command and its
-aspects, RPC methods, `coolify.json` keys — follows one set of conventions, and
-`test/naming.test.ts` enforces them. See [NAMING.md](NAMING.md).
+The words this plugin uses, and where each one lives: [NAMING.md](NAMING.md).
 
 ## Configuration
 

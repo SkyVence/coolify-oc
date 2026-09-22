@@ -366,7 +366,7 @@ export default Plugin.define({
           await linkWithModel()
           return
         case "unknown":
-          toast(`Unknown option. Try: ${coolifyAspectHelp()}.`, "warning")
+          toast(`Unknown option. Try: ${COOLIFY_ASPECTS.join(", ")}.`, "warning")
           return
         case "hub":
           await openConfigure(sessionDirectory())
@@ -586,7 +586,7 @@ export default Plugin.define({
         {
           id: "coolify.panel.open",
           title: "Coolify: configure or inspect",
-          description: `No argument opens the picker. Or name an aspect: ${coolifyAspectHelp()}.`,
+          description: `No argument opens the picker. Or name an aspect: ${COOLIFY_ASPECTS.join(", ")}.`,
           group: "Coolify",
           bind: false,
           palette: true,
@@ -1137,25 +1137,8 @@ export type CoolifyAspect =
   | "deploy"
   | "unknown"
 
-/**
- * The aspects `/coolify` accepts, in help order.
- *
- * `name` is what the user types; `aspect` is what the parser returns. One table
- * for both the help text and the parser, because two lists would drift and the
- * help would quietly under-report what the command does.
- */
-export const COOLIFY_ASPECTS: ReadonlyArray<{ readonly name: string; readonly aspect: CoolifyAspect }> = [
-  { name: "instance", aspect: "instance" },
-  { name: "token", aspect: "token" },
-  { name: "access", aspect: "access" },
-  { name: "apps", aspect: "apps" },
-  { name: "link", aspect: "link" },
-  { name: "link model", aspect: "link-model" },
-  { name: "deploy", aspect: "deploy" },
-]
-
-/** The aspects as a user would type them, for help text. */
-export const coolifyAspectHelp = (): string => COOLIFY_ASPECTS.map((entry) => entry.name).join(", ")
+/** The aspects `/coolify` accepts, in help order. */
+export const COOLIFY_ASPECTS = ["instance", "token", "access", "apps", "link", "link model", "deploy"] as const
 
 /**
  * Route the text after `/coolify` to an aspect.
