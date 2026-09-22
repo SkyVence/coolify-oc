@@ -135,6 +135,7 @@ export const Coolify = Rpc.define({
         configFile: string,
         scope: string,
         apps: { type: "array", items: unknownObject },
+        projects: { type: "array", items: unknownObject },
         capabilities: capabilitiesSchema,
         message: string,
       }),
@@ -292,6 +293,26 @@ export interface AppStatusPayload {
   readonly selected?: boolean
 }
 
+/**
+ * One `coolify.json` in the repository and the applications it maps.
+ *
+ * A repository can hold several of these — one at the root plus one per package
+ * — so the sidebar can render each as its own section. The top-level `apps` and
+ * `configFile` on `ApplicationsPayload` stay populated from a single group for
+ * callers that only understand one project.
+ */
+export interface ApplicationsProjectPayload {
+  /** Absolute path of the config file. */
+  readonly file: string
+  /** Path of the config file relative to the repository root. */
+  readonly relativeFile: string
+  readonly projectUUID?: string
+  readonly environmentName?: string
+  /** Alias of `file`, matching the top-level `configFile` field. */
+  readonly configFile: string
+  readonly apps: readonly AppStatusPayload[]
+}
+
 export interface ApplicationsPayload {
   readonly connected: boolean
   readonly endpoint?: string
@@ -301,6 +322,8 @@ export interface ApplicationsPayload {
   readonly configFile?: string
   readonly scope?: "mapped" | "project"
   readonly apps?: readonly AppStatusPayload[]
+  /** Every config discovered in the repository, sorted by path. */
+  readonly projects?: readonly ApplicationsProjectPayload[]
   readonly capabilities?: CapabilitiesPayload
   readonly message?: string
 }

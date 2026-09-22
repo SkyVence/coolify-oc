@@ -1,4 +1,5 @@
 import { Integration, Plugin } from "@opencode/plugin"
+import { relative as relativePath } from "node:path"
 import { probeCapabilities } from "./coolify/capabilities"
 import { CoolifyClient, normalizeEndpoint } from "./coolify/client"
 import {
@@ -23,11 +24,24 @@ import {
   type CoolifyDeployment,
 } from "./coolify/types"
 import { parseApplicationStatus } from "./coolify/runtime"
-import { findProjectConfig, selectApplication, updateProjectConfig } from "./project-config"
+import {
+  findAllProjectConfigs,
+  findProjectConfig,
+  findRepositoryRoot,
+  selectApplication,
+  updateProjectConfig,
+  type ProjectConfig,
+} from "./project-config"
 import { configFileFor } from "./tools/create"
 import { asApplicationMap, asDatabaseMap, nonEmpty } from "./tools/shared"
 import { latestDeploymentFor } from "./tools/shared"
-import { Coolify as CoolifyRpc, type ApplicationsPayload, type AppStatusPayload, type CapabilitiesPayload } from "./rpc"
+import {
+  Coolify as CoolifyRpc,
+  type ApplicationsPayload,
+  type ApplicationsProjectPayload,
+  type AppStatusPayload,
+  type CapabilitiesPayload,
+} from "./rpc"
 import { resolveProject } from "./resolve"
 import {
   clearLink,
@@ -503,7 +517,6 @@ export default Plugin.define({
       // own default location, which is how the sidebar missed a fresh mapping.
       const base = directory && directory !== "" ? directory : ctx.location.directory
       const config = await findProjectConfig(base)
-      const selected = config ? selectApplication(config, base) : undefined
       const apps: AppStatusPayload[] = []
 
       // Fetched at most once per payload, and only if a row actually needs it.
@@ -511,6 +524,7 @@ export default Plugin.define({
       const queueOnce = () => (queuePromise ??= listDeployments(client!, undefined).catch(() => []))
 
       const describe = async (
+        into: AppStatusPayload[],
         key: string,
         applicationUUID: string,
         path: string | undefined,
@@ -520,7 +534,7 @@ export default Plugin.define({
         const latest = await latestDeploymentFor(client!, applicationUUID, undefined, queueOnce).catch(
           () => undefined,
         )
-        apps.push({
+        into.push({
           key,
           applicationUUID,
           name: application?.name ?? key,
@@ -539,7 +553,33 @@ export default Plugin.define({
         })
       }
 
+      /**
+       * Enrich one config's applications, in map order. The linked application
+       * is a fallback only for the config that owns the working directory, so it
+       * is not repeated once per section.
+       */
+      const buildRows = async (
+        projectConfig: ProjectConfig | undefined,
+        allowLinkFallback: boolean,
+      ): Promise<AppStatusPayload[]> => {
+        const rows: AppStatusPayload[] = []
+        const selected = projectConfig ? selectApplication(projectConfig, base) : undefined
+        const entries = Object.entries(projectConfig?.applications ?? {}).slice(0, 12)
+        if (entries.length > 0) {
+          await Promise.all(
+            entries.map(([key, entry]) =>
+              describe(rows, key, entry.applicationUUID, entry.path, selected?.key === key),
+            ),
+          )
+        } else if (allowLinkFallback && link) {
+          await describe(rows, link.name ?? "application", link.applicationUUID, undefined, true)
+        }
+        return rows
+      }
+
       const projectUUID = config?.projectUUID ?? link?.projectUUID
+      let projects: ApplicationsProjectPayload[] | undefined
+      let configFile = config?.file
       if (mode === "project" && projectUUID) {
         // Applications do not report a usable `project_uuid`, so the project is
         // read through its environments instead. Filtering the flat
@@ -561,17 +601,38 @@ export default Plugin.define({
           }
         }
         await Promise.all(
-          members.slice(0, 20).map((member) => describe(member.name, member.uuid, undefined, false)),
+          members.slice(0, 20).map((member) => describe(apps, member.name, member.uuid, undefined, false)),
         )
-      } else {
-        const entries = Object.entries(config?.applications ?? {}).slice(0, 12)
-        if (entries.length > 0) {
-          await Promise.all(
-            entries.map(([key, entry]) => describe(key, entry.applicationUUID, entry.path, selected?.key === key)),
-          )
-        } else if (link) {
-          await describe(link.name ?? "application", link.applicationUUID, undefined, true)
+      } else if (directory && directory !== "") {
+        // A repository can hold several configs. The caller named a directory,
+        // so discover them all from the repository root and render each group.
+        const root = await findRepositoryRoot(base)
+        const configs = await findAllProjectConfigs(root)
+        // `findProjectConfig` is nearest-wins; when the owning config sits
+        // deeper than the walk bound it must still be shown.
+        if (config && !configs.some((entry) => entry.file === config.file)) configs.unshift(config)
+        projects = await Promise.all(
+          configs.map(async (projectConfig) => ({
+            file: projectConfig.file,
+            relativeFile: relativePath(root, projectConfig.file).split("\\").join("/"),
+            ...(projectConfig.projectUUID === undefined ? {} : { projectUUID: projectConfig.projectUUID }),
+            ...(projectConfig.environmentName === undefined
+              ? {}
+              : { environmentName: projectConfig.environmentName }),
+            configFile: projectConfig.file,
+            apps: await buildRows(projectConfig, projectConfig.file === config?.file),
+          })),
+        )
+        const selectedProject = projects.find((entry) => entry.file === config?.file) ?? projects[0]
+        if (selectedProject) {
+          configFile = selectedProject.file
+          apps.push(...selectedProject.apps)
+        } else {
+          // No config anywhere: keep the pinned-application fallback.
+          apps.push(...(await buildRows(config, true)))
         }
+      } else {
+        apps.push(...(await buildRows(config, true)))
       }
 
       return {
@@ -580,9 +641,10 @@ export default Plugin.define({
         endpointConfigured: true,
         ...(projectUUID ? { projectUUID } : {}),
         ...(config?.environmentName ? { environmentName: config.environmentName } : {}),
-        ...(config ? { configFile: config.file } : {}),
+        ...(configFile ? { configFile } : {}),
         scope: mode,
         apps,
+        ...(projects && projects.length > 0 ? { projects } : {}),
         capabilities: capabilitiesPayload(),
       }
     }

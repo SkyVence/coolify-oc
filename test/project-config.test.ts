@@ -1,10 +1,12 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
   databasesFor,
+  findAllProjectConfigs,
   findProjectConfig,
+  findRepositoryRoot,
   isWithin,
   normalizePath,
   parseProjectConfig,
@@ -134,6 +136,99 @@ describe("findProjectConfig", () => {
 
   it("returns undefined when there is no config", async () => {
     expect(await findProjectConfig(await tempRepo())).toBeUndefined()
+  })
+})
+
+describe("findRepositoryRoot", () => {
+  it("finds the directory holding the VCS marker", async () => {
+    const directory = await tempRepo()
+    await mkdir(join(directory, "apps/web"), { recursive: true })
+
+    expect(await findRepositoryRoot(join(directory, "apps/web"))).toBe(directory)
+    expect(await findRepositoryRoot(directory)).toBe(directory)
+  })
+
+  it("falls back to the starting directory when there is no marker", async () => {
+    const orphan = await mkdtemp(join(tmpdir(), "coolify-orphan-"))
+    expect(await findRepositoryRoot(orphan)).toBe(orphan)
+  })
+})
+
+describe("findAllProjectConfigs", () => {
+  it("finds every nested config, not just the nearest one", async () => {
+    const directory = await tempRepo()
+    await writeFile(join(directory, "coolify.json"), JSON.stringify({ projectUUID: "root" }), "utf8")
+
+    await mkdir(join(directory, "apps/web"), { recursive: true })
+    await writeFile(join(directory, "apps/web/coolify.json"), JSON.stringify({ projectUUID: "web" }), "utf8")
+
+    await mkdir(join(directory, "apps/api"), { recursive: true })
+    await writeFile(join(directory, "apps/api/.coolify.json"), JSON.stringify({ projectUUID: "api" }), "utf8")
+
+    const configs = await findAllProjectConfigs(directory)
+    expect(configs).toHaveLength(3)
+    expect(configs.map((config) => config.projectUUID).sort()).toEqual(["api", "root", "web"])
+  })
+
+  it("sorts the results by path", async () => {
+    const directory = await tempRepo()
+    await writeFile(join(directory, "coolify.json"), JSON.stringify({ projectUUID: "root" }), "utf8")
+    await mkdir(join(directory, "apps/web"), { recursive: true })
+    await writeFile(join(directory, "apps/web/coolify.json"), JSON.stringify({ projectUUID: "web" }), "utf8")
+    await mkdir(join(directory, "services"), { recursive: true })
+    await writeFile(join(directory, "services/coolify.json"), JSON.stringify({ projectUUID: "svc" }), "utf8")
+
+    const files = (await findAllProjectConfigs(directory)).map((config) => config.file)
+    expect(files).toEqual([...files].sort())
+  })
+
+  it("respects the depth bound", async () => {
+    const directory = await tempRepo()
+    await mkdir(join(directory, "a/b/c/d"), { recursive: true })
+    await writeFile(join(directory, "a/b/c/d/coolify.json"), JSON.stringify({ projectUUID: "depth4" }), "utf8")
+    await mkdir(join(directory, "a/b/c/d/e"), { recursive: true })
+    await writeFile(join(directory, "a/b/c/d/e/coolify.json"), JSON.stringify({ projectUUID: "depth5" }), "utf8")
+
+    const atDefault = await findAllProjectConfigs(directory)
+    expect(atDefault.map((config) => config.projectUUID)).toEqual(["depth4"])
+
+    const deeper = await findAllProjectConfigs(directory, { maxDepth: 5 })
+    expect(deeper.map((config) => config.projectUUID).sort()).toEqual(["depth4", "depth5"])
+  })
+
+  it("skips noisy directories", async () => {
+    const directory = await tempRepo()
+    await writeFile(join(directory, "coolify.json"), JSON.stringify({ projectUUID: "root" }), "utf8")
+    for (const ignored of ["node_modules", "dist", "build", ".next", "coverage", ".turbo", "vendor"]) {
+      await mkdir(join(directory, ignored), { recursive: true })
+      await writeFile(join(directory, ignored, "coolify.json"), JSON.stringify({ projectUUID: ignored }), "utf8")
+    }
+    // `.git` is created by `tempRepo`; a stray config inside it is noise too.
+    await writeFile(join(directory, ".git", "coolify.json"), JSON.stringify({ projectUUID: ".git" }), "utf8")
+
+    const configs = await findAllProjectConfigs(directory)
+    expect(configs.map((config) => config.projectUUID)).toEqual(["root"])
+  })
+
+  it("skips malformed files instead of throwing", async () => {
+    const directory = await tempRepo()
+    await writeFile(join(directory, "coolify.json"), "{ not json", "utf8")
+    await mkdir(join(directory, "web"), { recursive: true })
+    await writeFile(join(directory, "web/coolify.json"), JSON.stringify({ projectUUID: "web" }), "utf8")
+    await mkdir(join(directory, "api"), { recursive: true })
+    await writeFile(join(directory, "api/coolify.json"), "[]", "utf8")
+
+    const configs = await findAllProjectConfigs(directory)
+    expect(configs.map((config) => config.projectUUID)).toEqual(["web"])
+  })
+
+  it("never follows a symlinked directory", async () => {
+    const directory = await tempRepo()
+    const external = await mkdtemp(join(tmpdir(), "coolify-external-"))
+    await writeFile(join(external, "coolify.json"), JSON.stringify({ projectUUID: "external" }), "utf8")
+    await symlink(external, join(directory, "linked"), "dir")
+
+    expect(await findAllProjectConfigs(directory)).toEqual([])
   })
 })
 

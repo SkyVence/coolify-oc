@@ -8,6 +8,7 @@ import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
 import {
   Coolify as CoolifyRpc,
   type ApplicationsPayload,
+  type ApplicationsProjectPayload,
   type AppStatusPayload,
   type CapabilitiesPayload,
   type CandidatePayload,
@@ -528,15 +529,17 @@ function CoolifySidebar(props: {
 
   const [data, setData] = createSignal<ApplicationsPayload | undefined>()
   const [failed, setFailed] = createSignal(false)
-  const [hover, setHover] = createSignal<number | null>(null)
+  const [hover, setHover] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
   const [remaining, setRemaining] = createSignal(REFRESH_SECONDS_IDLE)
   const [frame, setFrame] = createSignal(0)
   let inFlight: Promise<void> | undefined
   let debounce: ReturnType<typeof setTimeout> | undefined
 
+  // `rows` feeds the countdown's active-deployment check; grouping only
+  // affects what is drawn, not when the sidebar refreshes.
   const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
-  const hidden = createMemo(() => Math.max(0, (data()?.apps?.length ?? 0) - rows().length))
+  const groups = createMemo(() => applicationGroups(data()))
 
   const directory = (): string | undefined =>
     context.data.session.get(props.sessionID)?.location?.directory ?? context.location?.directory
@@ -642,40 +645,56 @@ function CoolifySidebar(props: {
         </text>
       </box>
 
-      {/* Applications: status light, name, state. */}
+      {/* Applications: status light, name, state. One section per config. */}
       <box border={["top"]} borderColor={theme().muted} flexDirection="column">
-        <For each={rows()}>
-          {(app, index) => (
-            <box
-              flexDirection="row"
-              gap={1}
-              backgroundColor={hover() === index() ? surface().raised?.high : undefined}
-              onMouseOver={() => setHover(index())}
-              onMouseOut={() => setHover(null)}
-              onMouseUp={() => void props.onAppActions(app)}
-            >
-              <text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>
-              <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
-                {app.name}
-              </text>
-              <text fg={theme().muted} wrapMode="none" flexShrink={0}>
-                {appRowState(app)}
-              </text>
+        <For each={groups()}>
+          {(group, groupIndex) => (
+            <box flexDirection="column">
+              <Show when={group.heading}>
+                <text fg={theme().muted} wrapMode="none" truncate>
+                  {group.heading}
+                </text>
+              </Show>
+
+              <For each={group.apps.slice(0, MAX_ROWS)}>
+                {(app, index) => {
+                  // Each section owns its rows, so hover is keyed per group.
+                  const row = `${groupIndex()}:${index()}`
+                  return (
+                    <box
+                      flexDirection="row"
+                      gap={1}
+                      backgroundColor={hover() === row ? surface().raised?.high : undefined}
+                      onMouseOver={() => setHover(row)}
+                      onMouseOut={() => setHover(null)}
+                      onMouseUp={() => void props.onAppActions(app)}
+                    >
+                      <text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>
+                      <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                        {app.name}
+                      </text>
+                      <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+                        {appRowState(app)}
+                      </text>
+                    </box>
+                  )
+                }}
+              </For>
+
+              <Show when={group.apps.length > MAX_ROWS}>
+                <text fg={theme().muted} wrapMode="none" truncate onMouseUp={() => void props.onAllApps()}>
+                  +{group.apps.length - MAX_ROWS} more · show all
+                </text>
+              </Show>
+
+              <Show when={!failed() && data()?.connected && group.apps.length === 0}>
+                <text fg={theme().muted} wrapMode="none" truncate>
+                  {group.configFile ? "not deployed" : "not deployed · no coolify.json"}
+                </text>
+              </Show>
             </box>
           )}
         </For>
-
-        <Show when={hidden() > 0}>
-          <text fg={theme().muted} wrapMode="none" truncate onMouseUp={() => void props.onAllApps()}>
-            +{hidden()} more · show all
-          </text>
-        </Show>
-
-        <Show when={!failed() && data()?.connected && rows().length === 0}>
-          <text fg={theme().muted} wrapMode="none" truncate>
-            {data()?.configFile ? "not deployed" : "not deployed · no coolify.json"}
-          </text>
-        </Show>
       </box>
 
       {/* One entry point; the actions it lists each open their own popup. */}
@@ -783,6 +802,56 @@ export function refreshSeconds(apps: readonly AppStatusPayload[]): number {
     return status === "queued" || status === "in_progress"
   })
   return active ? REFRESH_SECONDS_ACTIVE : REFRESH_SECONDS_IDLE
+}
+
+/** One rendered section of the sidebar: a config and its applications. */
+export interface ApplicationGroupView {
+  /** Shown only when the payload carries more than one config. */
+  readonly heading?: string
+  readonly configFile?: string
+  readonly apps: readonly AppStatusPayload[]
+}
+
+/**
+ * The config's repo-relative directory, for the section heading.
+ *
+ * The repository root has no useful directory label, so its `projectUUID`
+ * stands in. Returns `undefined` at the root when there is no UUID, which
+ * suppresses the heading rather than printing a placeholder.
+ */
+export function projectGroupHeading(project: ApplicationsProjectPayload): string | undefined {
+  const relative = project.relativeFile
+  const slash = relative.lastIndexOf("/")
+  const directory = slash === -1 ? "" : relative.slice(0, slash)
+  if (directory !== "" && directory !== ".") return directory
+  return project.projectUUID
+}
+
+/**
+ * Split a payload into the sections the sidebar renders.
+ *
+ * One config (or none) keeps today's layout: a single, headingless group from
+ * the top-level `apps`. Two or more render one heading per config, so the
+ * grouping lives here where it can be unit tested.
+ */
+export function applicationGroups(payload: ApplicationsPayload | undefined): readonly ApplicationGroupView[] {
+  const projects = payload?.projects ?? []
+  if (projects.length > 1) {
+    return projects.map((project) => {
+      const heading = projectGroupHeading(project)
+      return {
+        ...(heading === undefined ? {} : { heading }),
+        configFile: project.configFile,
+        apps: project.apps,
+      }
+    })
+  }
+  return [
+    {
+      ...(payload?.configFile === undefined ? {} : { configFile: payload.configFile }),
+      apps: payload?.apps ?? [],
+    },
+  ]
 }
 
 export function appRowTone(app: AppStatusPayload): LineTone {
