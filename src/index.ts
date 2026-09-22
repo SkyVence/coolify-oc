@@ -154,7 +154,15 @@ export default Plugin.define({
 
       resolve: async (input) => {
         const payload = input as { autoLink?: boolean; directory?: string } | undefined
-        const directory = nonEmpty(payload?.directory) ?? ctx.location.directory
+        const directory = nonEmpty(payload?.directory)
+        if (!directory) {
+          return {
+            source: "none",
+            ambiguous: false,
+            candidates: [],
+            notes: ["No project directory was supplied, so there is nothing to resolve against."],
+          }
+        }
         const resolution = await resolveProject({
           store,
           projectID,
@@ -519,7 +527,18 @@ export default Plugin.define({
       // The RPC `location` option is not honoured, so the caller states which
       // project directory it means. Without it the server would answer for its
       // own default location, which is how the sidebar missed a fresh mapping.
-      const base = directory && directory !== "" ? directory : ctx.location.directory
+      // No fallback to `ctx.location.directory`: the RPC may be routed to a
+      // different location's plugin instance, so guessing answers for the wrong
+      // project. The caller must say which directory it means.
+      const base = nonEmpty(directory)
+      if (!base) {
+        return {
+          scope: mode,
+          apps: [],
+          ...capabilitiesPayload(),
+          message: "No project directory was supplied, so the sidebar cannot know which project to show.",
+        }
+      }
       const config = await findProjectConfig(base)
       const apps: AppStatusPayload[] = []
 

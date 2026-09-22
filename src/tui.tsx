@@ -117,12 +117,30 @@ export default Plugin.define({
       return route.type === "session" ? route.sessionID : undefined
     }
 
-    /** The current session's project directory, which is not always the TUI's. */
-    const sessionDirectory = (): string | undefined => {
-      const sessionID = currentSessionID()
-      if (!sessionID) return undefined
-      return context.data.session.get(sessionID)?.location?.directory ?? context.location?.directory
+    /**
+     * The current session's project directory.
+     *
+     * `context.location` is the *TUI's* launch directory, shared by every session
+     * in it, so falling back to it silently shows one project's state for all of
+     * them. The session's own location is used, then its project's canonical
+     * directory, and only then the TUI's — which the side-chat path tolerates
+     * because it only decides where a new session starts.
+     */
+    const directoryFor = (sessionID: string | undefined): string | undefined => {
+      if (sessionID) {
+        const session = context.data.session.get(sessionID)
+        const fromSession = session?.location?.directory
+        if (fromSession) return fromSession
+        const projectID = session?.projectID
+        if (projectID) {
+          const canonical = context.data.project.get(projectID)?.canonical
+          if (canonical) return canonical
+        }
+      }
+      return context.location?.directory
     }
+
+    const sessionDirectory = (): string | undefined => directoryFor(currentSessionID())
 
     async function currentCapabilities(): Promise<CapabilitiesPayload | undefined> {
       try {
@@ -570,6 +588,7 @@ function CoolifySidebar(props: {
   const [failed, setFailed] = createSignal(false)
   const [hover, setHover] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
+  const [noDirectory, setNoDirectory] = createSignal(false)
   const [remaining, setRemaining] = createSignal(REFRESH_SECONDS_IDLE)
   const [frame, setFrame] = createSignal(0)
   const [starting, setStarting] = createSignal<readonly StartingUp[]>([])
@@ -600,8 +619,22 @@ function CoolifySidebar(props: {
     starting().some((entry) => entry.applicationUUID === app.applicationUUID)
   const groups = createMemo(() => applicationGroups(data()))
 
-  const directory = (): string | undefined =>
-    context.data.session.get(props.sessionID)?.location?.directory ?? context.location?.directory
+  /**
+   * Resolved the same way as the server-side helper. There is deliberately no
+   * fallback to the TUI's own directory: showing a different project's state is
+   * worse than showing that this session's project could not be determined.
+   */
+  const directory = (): string | undefined => {
+    const session = context.data.session.get(props.sessionID)
+    const fromSession = session?.location?.directory
+    if (fromSession) return fromSession
+    const projectID = session?.projectID
+    if (projectID) {
+      const canonical = context.data.project.get(projectID)?.canonical
+      if (canonical) return canonical
+    }
+    return undefined
+  }
 
   /**
    * Coalesced: concurrent callers share one request. During a deployment the
@@ -703,6 +736,20 @@ function CoolifySidebar(props: {
         </text>
         <text fg={theme().muted} wrapMode="none" flexShrink={0}>
           {remaining()}s
+        </text>
+      </box>
+
+      {/* Which project this session belongs to. Without it a wrong answer is
+          invisible, which is exactly how a shared-state bug hides. */}
+      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
+        <text
+          fg={noDirectory() ? theme().feedback.warning.base : theme().muted}
+          wrapMode="none"
+          truncate
+        >
+          {noDirectory()
+            ? "no project directory for this session"
+            : `project ${basename(directory() ?? "")}${data()?.configFile ? ` · ${basename(data()!.configFile!)}` : ""}`}
         </text>
       </box>
 
@@ -1129,6 +1176,12 @@ function toneColour(
   if (tone === "warn") return theme.feedback.warning.base
   if (tone === "bad") return theme.feedback.error.base
   return theme.muted
+}
+
+/** The last path segment, for a compact project label. */
+export function basename(value: string): string {
+  const trimmed = value.replace(/\/+$/, "")
+  return trimmed.split("/").pop() ?? trimmed
 }
 
 function slug(value: string | undefined): string {

@@ -80,7 +80,7 @@ export const Coolify = Rpc.define({
       output: object({ ok: boolean, endpoint: string, message: string }),
     },
     resolve: {
-      input: object({ autoLink: boolean, directory: string }),
+      input: object({ autoLink: boolean, directory: string }, ["directory"]),
       output: object({
         source: string,
         ambiguous: boolean,
@@ -125,7 +125,7 @@ export const Coolify = Rpc.define({
       }),
     },
     applications: {
-      input: object({ scope: string, directory: string }),
+      input: object({ scope: string, directory: string }, ["directory"]),
       output: object({
         connected: boolean,
         endpoint: string,
