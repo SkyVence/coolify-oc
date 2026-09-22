@@ -48,9 +48,10 @@ OpenCode 2.0.10 does not load plugins listed only in the global
 | `/coolify-map` | Resolves this repository against Coolify and writes `coolify.json`. No model turn. |
 | `/coolify-deploy` | Deploys in a **background tab**, so the current conversation keeps running. |
 
-The sidebar shows the instance, the token's level of access, and one row per
-application with a status light, a compact state and a refresh countdown.
-Clicking a row offers Deploy, Logs, Restart and Roll back.
+The sidebar shows the instance, the working directory it is answering for, the
+token's level of access, and one row per application with a status light, a
+compact state and a refresh countdown. Clicking a row offers Deploy, Logs,
+Restart and Roll back.
 
 ## Configuration
 

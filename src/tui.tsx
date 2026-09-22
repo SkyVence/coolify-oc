@@ -723,33 +723,42 @@ function CoolifySidebar(props: {
 
   return (
     <box flexDirection="column">
-      {/* Title: which instance, and a refresh on click. */}
+      {/* Title: instance, then the working directory it is answering for. The
+          directory is on screen because a wrong project is otherwise invisible,
+          which is exactly how a shared-state bug hides. */}
       <box flexDirection="row" gap={1} onMouseUp={() => void load()}>
-        <text attributes={TextAttributes.BOLD} fg={theme().base}>
+        <text attributes={TextAttributes.BOLD} fg={theme().base} flexShrink={0}>
           Coolify
         </text>
         <Show when={busy()}>
-          <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
+          <text fg={theme().feedback.info?.base ?? theme().base} flexShrink={0}>
+            {SPINNER[frame() % SPINNER.length]}
+          </text>
         </Show>
-        <text fg={failed() ? theme().feedback.error.base : theme().muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+        <text
+          fg={failed() ? theme().feedback.error.base : theme().muted}
+          wrapMode="none"
+          truncate
+          flexShrink={1}
+          minWidth={0}
+        >
           {failed() ? "unreachable" : (data()?.capabilities?.team?.name ?? instanceHint(data()))}
         </text>
         <text fg={theme().muted} wrapMode="none" flexShrink={0}>
-          {remaining()}s
+          ·
         </text>
-      </box>
-
-      {/* Which project this session belongs to. Without it a wrong answer is
-          invisible, which is exactly how a shared-state bug hides. */}
-      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
         <text
           fg={noDirectory() ? theme().feedback.warning.base : theme().muted}
           wrapMode="none"
           truncate
+          flexShrink={1}
+          minWidth={0}
         >
-          {noDirectory()
-            ? "no project directory for this session"
-            : `project ${basename(directory() ?? "")}${data()?.configFile ? ` · ${basename(data()!.configFile!)}` : ""}`}
+          {noDirectory() ? "no project directory" : basename(directory() ?? "")}
+        </text>
+        <box flexGrow={1} />
+        <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+          {remaining()}s
         </text>
       </box>
 
