@@ -3,9 +3,7 @@ import {
   STARTING_MIN_SPIN_MS,
   STARTING_TIMEOUT_MS,
   abilityEntries,
-  abilitySummary,
   accessLevel,
-  abilityTone,
   applicationGroups,
   appRowLabel,
   appRowState,
@@ -252,7 +250,10 @@ describe("tui plugin", () => {
 
     expect(harness.sessionPrompts).toHaveLength(1)
     expect(harness.sessionPrompts[0].sessionID).toBe("ses_deploy")
-    expect(harness.sessionPrompts[0].text).toContain("coolify_resolve")
+    // The instructions travel as a skill reference, not a pasted prompt, so the
+    // same skill serves a client that exposes skills but not plugin tools.
+    expect(harness.sessionPrompts[0].skills).toEqual([{ id: "coolify-deploy" }])
+    expect(harness.sessionPrompts[0].text).toContain("deploy")
 
     // The new session is opened in a tab — and `open` does not steal focus.
     expect(harness.tabOpens).toEqual(["ses_deploy"])
@@ -413,16 +414,6 @@ describe("ability tones", () => {
       ["secrets", "granted", "ok"],
     ])
   })
-
-  it("tones the whole line by how many abilities are granted", () => {
-    expect(abilityTone(probes({ read: "granted", write: "granted", deploy: "granted", "read:sensitive": "granted" }))).toBe(
-      "ok",
-    )
-    expect(abilityTone(probes({ read: "granted", write: "granted" }))).toBe("warn")
-    expect(abilityTone(probes({ read: "granted" }))).toBe("warn")
-    expect(abilityTone(probes({ read: "denied", write: "unknown" }))).toBe("bad")
-    expect(abilityTone(undefined)).toBe("bad")
-  })
 })
 
 describe("starting up detection", () => {
@@ -487,25 +478,6 @@ describe("starting up detection", () => {
   it("does not duplicate an application that is marked twice", () => {
     const once = markStartingUp([], "a1", 0)
     expect(markStartingUp(once, "a1", 99)).toBe(once)
-  })
-})
-
-describe("abilitySummary", () => {
-  const probes = (statuses: Record<string, string>) =>
-    ({
-      connected: true,
-      probes: Object.fromEntries(Object.entries(statuses).map(([key, status]) => [key, { status, detail: "" }])),
-    }) as any
-
-  it("lists only granted abilities, in a stable order", () => {
-    expect(abilitySummary(probes({ read: "granted", write: "granted", deploy: "granted", "read:sensitive": "granted" }))).toBe(
-      "read write deploy secrets",
-    )
-  })
-
-  it("omits abilities that are denied or unknown", () => {
-    expect(abilitySummary(probes({ read: "granted", write: "denied", deploy: "unknown" }))).toBe("read")
-    expect(abilitySummary(undefined)).toBe("none")
   })
 })
 

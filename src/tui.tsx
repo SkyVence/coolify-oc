@@ -6,6 +6,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { normalizeDeploymentStatus } from "./coolify/deploy"
 import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
 import { DEFAULT_REFRESH_SECONDS } from "./options"
+import { DEPLOY_SKILL, MAP_SKILL, type CoolifySkill } from "./skills"
 import {
   Coolify as CoolifyRpc,
   type ApplicationsPayload,
@@ -48,49 +49,6 @@ interface SidebarControls {
   readonly setBusy: (value: boolean) => void
 }
 
-const DEPLOY_PROMPT = `Set up and deploy this project on Coolify, using the \`coolify\` tools.
-
-Ask me whenever something is ambiguous — do not guess, and do not provision anything I have not confirmed.
-
-1. Call \`coolify_resolve\` and read its \`config\` block.
-   - If a \`coolify.json\` entry covers this directory, use it.
-   - In a monorepo where several applications are listed but none owns this directory, do NOT pick
-     one: show me the keys and their paths and ask which applies, using the \`question\` tool.
-   - If nothing is linked, call \`coolify_list_resources\`, show me the candidates, and ask. Then
-     pin the answer with \`coolify_link\`.
-   - If this project is not on Coolify at all, offer to create it with \`coolify_plan_application\`
-     then \`coolify_create_application\`, and confirm the plan with me first.
-2. Call \`coolify_application\` with action "settings" to read what is configurable, and
-   "deployments" for the history. Call \`coolify_application\` action "envs" for variable names.
-3. Databases: call \`coolify_databases\`, then compare against the databases in \`coolify.json\` and
-   against what the repository actually needs (look at .env files, compose files, and config).
-   - If something required is missing, tell me what you propose — engine, name, internal or
-     public, and which project and server — and ask before calling \`coolify_create_database\`.
-   - Skip this step if the project uses no database.
-4. Ask me, in one batch of \`question\` calls, about anything that should change before deploying:
-   at minimum the public domain, the exposed port, and the build pack when it is not obvious.
-   Infer sensible defaults from the repository so I only have to correct you.
-5. Apply what I confirm with \`coolify_application_update\`. In a monorepo, also record the mapping
-   with \`coolify_configure_project\` so the next run resolves without asking. Show me the file
-   content before writing it.
-6. Call \`coolify_deploy\` and report the final status. Deploy any database you created too.`
-
-const SETUP_PROMPT = `Inspect this repository and record its Coolify mapping in \`coolify.json\`, using the \`coolify\` tools.
-
-Ask before writing anything, and never invent a UUID.
-
-1. Call \`coolify_resolve\` to see what is already mapped, then \`coolify_list_resources\` to see the
-   available applications, projects, servers, and environments.
-2. Work out whether this is a monorepo by looking for multiple deployable packages — workspace
-   manifests (pnpm/npm/yarn workspaces, go.work, Cargo workspace), several Dockerfiles, or several
-   compose files — and note the repo-relative directory each one owns.
-3. Call \`coolify_databases\` and record the databases this project already has.
-4. Propose the whole \`coolify.json\` and show it to me before writing.
-5. Ask me, with the \`question\` tool, about every mapping you are unsure of. Offer the candidates
-   you found rather than asking me to supply raw UUIDs.
-6. Write the agreed file with \`coolify_configure_project\`. Do not create applications or databases
-   in this step; only record what already exists. Tell me to commit the file afterwards.`
-
 export default Plugin.define({
   id: "opencode.coolify.tui",
   setup(context) {
@@ -108,6 +66,14 @@ export default Plugin.define({
      * often than the mapped one, so a short cache avoids a round trip per click.
      */
     let allAppsCache: { at: number; directory: string | undefined; apps: readonly AppStatusPayload[] } | undefined
+    /**
+     * Directories whose model-driven mapping has already been attempted.
+     *
+     * A side chat is fire-and-forget: the plugin cannot await its result, so
+     * "the model failed" cannot be observed directly. A second click on the
+     * same still-unmapped project is the signal, and it opens the paste box.
+     */
+    const modelMapAttempts = new Set<string>()
 
     const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "info") =>
       context.ui.toast.show({ message, variant })
@@ -224,8 +190,14 @@ export default Plugin.define({
      * Open a side conversation in a background tab, or fall back to this chat
      * when tabs are disabled. Used for both deploy and "map with the model", so
      * neither needs a session to already be open.
+     *
+     * The instructions travel as a skill reference rather than a pasted prompt:
+     * the runtime expands the registered skill into the message, so the same
+     * skill serves a client that exposes skills but not plugin tools.
      */
-    async function runInSideChat(title: string, prompt: string): Promise<void> {
+    async function runInSideChat(title: string, skill: CoolifySkill, text: string): Promise<void> {
+      // `promptInput`, not `message`: `message` is the error formatter below.
+      const promptInput = { text, skills: [{ id: skill.id }] }
       if (!context.ui.tabs.enabled()) {
         const runHere = await context.ui.dialog.confirm({
           title: "Tabs are disabled",
@@ -238,7 +210,7 @@ export default Plugin.define({
           toast("Open a session first.", "warning")
           return
         }
-        await context.client.session.prompt({ sessionID, text: prompt })
+        await context.client.session.prompt({ sessionID, ...promptInput })
         return
       }
 
@@ -254,7 +226,7 @@ export default Plugin.define({
           toast("Could not create the side chat.", "error")
           return
         }
-        await context.client.session.prompt({ sessionID, text: prompt })
+        await context.client.session.prompt({ sessionID, ...promptInput })
         context.ui.tabs.open(sessionID)
         toast(`${title} started in a new tab.`, "success")
       } catch (cause) {
@@ -263,15 +235,81 @@ export default Plugin.define({
     }
 
     async function deployInSideChat(app: AppStatusPayload | undefined): Promise<void> {
-      const prompt = app
-        ? `Target application: ${app.name} (${app.applicationUUID}).\n\n${DEPLOY_PROMPT}`
-        : DEPLOY_PROMPT
-      await runInSideChat(app ? `Deploy ${app.name}` : "Coolify deploy", prompt)
+      const text = app
+        ? `Target application: ${app.name} (${app.applicationUUID}).`
+        : "Set up and deploy this project on Coolify."
+      await runInSideChat(app ? `Deploy ${app.name}` : "Coolify deploy", DEPLOY_SKILL, text)
     }
 
     /** The model-driven mapping: needed for a monorepo, or when nothing matches. */
     async function mapWithModel(): Promise<void> {
-      await runInSideChat("Map repository", SETUP_PROMPT)
+      await runInSideChat("Map repository", MAP_SKILL, "Map this repository's Coolify applications.")
+    }
+
+    /**
+     * The `map` button beside an unmapped project: try the model first, then
+     * fall back to asking the user to paste the config the model produced.
+     */
+    async function mapFirst(directory: string | undefined): Promise<void> {
+      const key = directory ?? ""
+      if (modelMapAttempts.has(key)) {
+        await promptForProjectJson(directory)
+        return
+      }
+      modelMapAttempts.add(key)
+      await mapWithModel()
+      toast("If the model could not map it, click map again to paste the config yourself.", "info")
+    }
+
+    /**
+     * The manual fallback: paste a `coolify.json` and write it unchanged. A
+     * textarea, because a config is multi-line and the prompt dialog is not.
+     */
+    async function promptForProjectJson(directory: string | undefined): Promise<void> {
+      let draft: string | undefined
+      await new Promise<void>((resolve) => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          resolve()
+        }
+        context.ui.dialog.set({ size: "large", centered: true })
+        context.ui.dialog.show(
+          () => (
+            <ProjectJsonPopup
+              onSubmit={(content) => {
+                draft = content
+                finish()
+                context.ui.dialog.clear()
+              }}
+              onCancel={() => {
+                finish()
+                context.ui.dialog.clear()
+              }}
+            />
+          ),
+          // A click outside, or escape, closes without submitting.
+          finish,
+        )
+      })
+      if (draft === undefined || draft.trim() === "") return
+
+      try {
+        const result = (await rpc.writeProjectJson({ directory, content: draft })) as {
+          ok?: boolean
+          file?: string
+          message?: string
+        }
+        if (result.ok === true) {
+          toast(`Mapped this project in ${result.file}.`, "success")
+          sidebarControls?.refresh()
+        } else {
+          toast(result.message ?? "Could not write coolify.json.", "error")
+        }
+      } catch (cause) {
+        toast(`Could not write coolify.json: ${message(cause)}`, "error")
+      }
     }
 
     /**
@@ -555,6 +593,7 @@ export default Plugin.define({
           onAppActions={openAppActions}
           onAllApps={() => openAllApps(sessionDirectory())}
           onConfigure={() => void openConfigure(sessionDirectory())}
+          onMapFirst={() => mapFirst(sessionDirectory())}
           onReady={(controls) => {
             sidebarControls = controls
           }}
@@ -577,6 +616,7 @@ function CoolifySidebar(props: {
   onAppActions: (app: AppStatusPayload) => Promise<void>
   onAllApps: () => Promise<void>
   onConfigure: () => void
+  onMapFirst: () => Promise<void>
   onReady: (controls: SidebarControls) => void
 }) {
   const context = usePlugin()
@@ -599,20 +639,6 @@ function CoolifySidebar(props: {
 
   // `rows` feeds the countdown's active-deployment check; grouping only
   // affects what is drawn, not when the sidebar refreshes.
-  /**
-   * Five steps from no access to full access. Reds and greens come from the
-   * theme so they match every theme; the orange and lime in between are fixed,
-   * because the theme only names three feedback levels.
-   */
-  const accessColour = (): string =>
-    [
-      theme().feedback.error.base,
-      "#fb923c",
-      theme().feedback.warning.base,
-      "#a3e635",
-      theme().feedback.success.base,
-    ][accessLevel(data()?.capabilities)] ?? theme().muted
-
   const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
   const idleSeconds = (): number => data()?.refreshSeconds ?? REFRESH_SECONDS_IDLE
   const isStarting = (app: AppStatusPayload): boolean =>
@@ -762,34 +788,6 @@ function CoolifySidebar(props: {
         </text>
       </box>
 
-      {/* Capabilities: the line takes the overall tone, each ability its own. */}
-      <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure} flexDirection="row">
-        <text fg={accessColour()} wrapMode="none" flexShrink={0}>
-          access
-        </text>
-        <text fg={theme().muted} wrapMode="none" flexShrink={0}>
-          ·
-        </text>
-        <Show
-          when={abilityEntries(data()?.capabilities).some((entry) => entry.status !== "unknown")}
-          fallback={
-            <text fg={accessColour()} wrapMode="none" flexShrink={0}>
-              {" "}
-              none
-            </text>
-          }
-        >
-          <For each={abilityEntries(data()?.capabilities)}>
-            {(entry) => (
-              <text fg={toneColour(theme(), entry.tone)} wrapMode="none" flexShrink={0}>
-                {" "}
-                {entry.label}
-              </text>
-            )}
-          </For>
-        </Show>
-      </box>
-
       {/* Applications: status light, name, state. One section per config. */}
       <box border={["top"]} borderColor={theme().muted} flexDirection="column">
         <For each={groups()}>
@@ -845,9 +843,21 @@ function CoolifySidebar(props: {
               </Show>
 
               <Show when={!failed() && data()?.connected && group.apps.length === 0}>
-                <text fg={theme().muted} wrapMode="none" truncate>
-                  {group.configFile ? "not deployed" : "not deployed · no coolify.json"}
-                </text>
+                <box flexDirection="row" gap={1}>
+                  <text fg={theme().muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
+                    {group.configFile ? "not deployed" : "not deployed · no coolify.json"}
+                  </text>
+                  {/* The one action that makes sense for an unmapped project,
+                      and the only place the sidebar offers one inline. */}
+                  <text
+                    fg={theme().feedback.info?.base ?? theme().base}
+                    wrapMode="none"
+                    flexShrink={0}
+                    onMouseUp={() => void props.onMapFirst()}
+                  >
+                    map
+                  </text>
+                </box>
               </Show>
             </box>
           )}
@@ -858,6 +868,55 @@ function CoolifySidebar(props: {
       <box border={["top"]} borderColor={theme().muted} onMouseUp={props.onConfigure}>
         <text fg={theme().feedback.info?.base ?? theme().base} wrapMode="none" truncate>
           Configure
+        </text>
+      </box>
+    </box>
+  )
+}
+
+/**
+ * A paste box for a `coolify.json`.
+ *
+ * The dialog API's prompt is single-line and a config is not, so this is a
+ * custom dialog around a textarea. `ctrl+s` submits; `return` inserts a newline,
+ * which is what a multi-line paste needs.
+ */
+function ProjectJsonPopup(props: {
+  onSubmit: (content: string) => void
+  onCancel: () => void
+}) {
+  const context = usePlugin()
+  const theme = () => context.theme.text
+  const action = () => theme().feedback.info?.base ?? theme().base
+  // Structurally typed: only `plainText` is needed, so the renderable class
+  // does not have to be imported here.
+  let field: { readonly plainText: string } | undefined
+  const submit = () => props.onSubmit(field?.plainText ?? "")
+
+  return (
+    <box flexDirection="column" gap={1} padding={1}>
+      <text attributes={TextAttributes.BOLD} fg={theme().base}>
+        Paste coolify.json
+      </text>
+      <text fg={theme().muted} wrapMode="none" truncate>
+        Paste the config the model produced, then ctrl+s to write it.
+      </text>
+      <textarea
+        ref={(value) => {
+          field = value
+        }}
+        focused
+        height={10}
+        placeholder={'{ "applications": { "web": { "applicationUUID": "…" } } }'}
+        keyBindings={[{ name: "s", ctrl: true, action: "submit" }]}
+        onSubmit={submit}
+      />
+      <box flexDirection="row" gap={2}>
+        <text fg={action()} wrapMode="none" onMouseUp={submit}>
+          write it
+        </text>
+        <text fg={theme().muted} wrapMode="none" onMouseUp={() => props.onCancel()}>
+          cancel
         </text>
       </box>
     </box>
@@ -878,6 +937,20 @@ function SetupPopup(props: {
   const action = () => theme().feedback.info?.base ?? theme().base
 
   const [data, setData] = createSignal<CapabilitiesPayload | undefined>()
+
+  /**
+   * Five steps from no access to full access. Reds and greens come from the
+   * theme so they match every theme; the orange and lime between them are
+   * fixed, because the theme only names three feedback levels.
+   */
+  const accessColour = (): string =>
+    [
+      theme().feedback.error.base,
+      "#fb923c",
+      theme().feedback.warning.base,
+      "#a3e635",
+      theme().feedback.success.base,
+    ][accessLevel(data())] ?? theme().muted
 
   const load = async () => {
     try {
@@ -906,8 +979,38 @@ function SetupPopup(props: {
           wrapMode="none"
           truncate
         >
-          token     {data()?.connected ? `connected · ${abilitySummary(data())}` : (data()?.message ?? "not connected")}
+          token     {data()?.connected ? "connected" : (data()?.message ?? "not connected")}
         </text>
+        {/* The access detail lives here now, not in the sidebar: it describes
+            the instance, which is what this popup is about. */}
+        <Show when={data()?.connected}>
+          <box flexDirection="row">
+            <text fg={accessColour()} wrapMode="none" flexShrink={0}>
+              access
+            </text>
+            <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+              ·
+            </text>
+            <Show
+              when={abilityEntries(data()).some((entry) => entry.status !== "unknown")}
+              fallback={
+                <text fg={accessColour()} wrapMode="none" flexShrink={0}>
+                  {" "}
+                  none
+                </text>
+              }
+            >
+              <For each={abilityEntries(data())}>
+                {(entry) => (
+                  <text fg={toneColour(theme(), entry.tone)} wrapMode="none" flexShrink={0}>
+                    {" "}
+                    {entry.label}
+                  </text>
+                )}
+              </For>
+            </Show>
+          </box>
+        </Show>
       </box>
 
       <box flexDirection="column">
@@ -967,30 +1070,12 @@ export function abilityEntries(capabilities: CapabilitiesPayload | undefined): r
 }
 
 /**
- * The tone for the whole capabilities line: green when every ability is
- * granted, amber while only some are, red when none are.
- */
-/**
  * How much access the token has, as a 0-4 step. Zero means every ability was
  * refused, four means all of them were granted. Kept separate from the tone
  * vocabulary because the scale needs more than three steps.
  */
 export function accessLevel(capabilities: CapabilitiesPayload | undefined): number {
   return abilityEntries(capabilities).filter((entry) => entry.status === "granted").length
-}
-
-export function abilityTone(capabilities: CapabilitiesPayload | undefined): LineTone {
-  const entries = abilityEntries(capabilities)
-  const granted = entries.filter((entry) => entry.status === "granted").length
-  if (granted === 0) return "bad"
-  return granted === entries.length ? "ok" : "warn"
-}
-
-export function abilitySummary(capabilities: CapabilitiesPayload | undefined): string {
-  const granted = abilityEntries(capabilities)
-    .filter((entry) => entry.status === "granted")
-    .map((entry) => entry.label)
-  return granted.length > 0 ? granted.join(" ") : "none"
 }
 
 /** A restarted application the sidebar should mark as coming back up. */

@@ -1,4 +1,7 @@
 import { Integration, Plugin } from "@opencode/plugin"
+import { writeFile } from "node:fs/promises"
+import { AbsolutePath } from "@opencode/schema/schema"
+import { ID as SkillID, Info as SkillInfo, Name as SkillName } from "@opencode/schema/skill"
 import { relative as relativePath } from "node:path"
 import { probeCapabilities } from "./coolify/capabilities"
 import { CoolifyClient, normalizeEndpoint } from "./coolify/client"
@@ -31,6 +34,7 @@ import {
   findRepositoryRoot,
   selectApplication,
   updateProjectConfig,
+  validateProjectJson,
   type ProjectConfig,
 } from "./project-config"
 import { configFileFor } from "./tools/create"
@@ -44,6 +48,7 @@ import {
   type CapabilitiesPayload,
 } from "./rpc"
 import { resolveProject } from "./resolve"
+import { COOLIFY_SKILLS, skillPath } from "./skills"
 import {
   clearLink,
   readCapabilities,
@@ -122,6 +127,26 @@ export default Plugin.define({
             }
           },
         })
+      }
+    })
+
+    // --- Skills -------------------------------------------------------------
+    // The mapping and deploy instructions live here rather than inside the TUI,
+    // so a client that exposes skills but not plugin tools can still use them.
+    // Registering is idempotent, and `reload` re-runs the transform, so a hot
+    // reload replaces the content instead of duplicating it. `skills.ts` stays
+    // plain data; the runtime's branded types are applied only here.
+    const skillRegistration = await ctx.skill.transform((editor) => {
+      for (const skill of COOLIFY_SKILLS) {
+        editor.add(
+          SkillInfo.make({
+            id: SkillID.make(skill.id),
+            name: SkillName.make(skill.name),
+            description: skill.description,
+            path: AbsolutePath.make(skillPath(ctx.location.directory, skill.id)),
+            content: skill.content,
+          }),
+        )
       }
     })
 
@@ -238,6 +263,8 @@ export default Plugin.define({
       },
 
       configureProject: async (input) => configureProjectPayload(input as Record<string, unknown> | undefined),
+
+      writeProjectJson: async (input) => writeProjectJsonPayload(input as Record<string, unknown> | undefined),
 
       logs: async (input) => {
         if (!client) return { logs: "", message: "No Coolify API token is connected." }
@@ -710,6 +737,46 @@ export default Plugin.define({
         applications: Object.keys(config.applications).length,
         databases: Object.keys(config.databases).length,
       }
+    }
+
+    /**
+     * Write a `coolify.json` verbatim. This is the fallback for when the
+     * model-driven mapping produced a file but could not apply it — the user
+     * pastes what the model generated and the plugin writes it unchanged.
+     */
+    async function writeProjectJsonPayload(input: Record<string, unknown> | undefined) {
+      const directory = nonEmpty(input?.directory) ?? ctx.location.directory
+      const raw = typeof input?.content === "string" ? input.content : ""
+      if (raw.trim() === "") return { ok: false, file: "", message: "The config is empty." }
+
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw)
+      } catch (cause) {
+        return { ok: false, file: "", message: `That is not valid JSON: ${describeError(cause)}` }
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { ok: false, file: "", message: "coolify.json must be a JSON object." }
+      }
+
+      const problem = validateProjectJson(parsed as Record<string, unknown>)
+      if (problem) return { ok: false, file: "", message: problem }
+
+      const file = await configFileFor(directory)
+      if (!file) {
+        return {
+          ok: false,
+          file: "",
+          message: "This directory is not inside a git repository, so there is nowhere to write coolify.json.",
+        }
+      }
+
+      // Rewritten through `JSON.stringify` so the formatting matches the
+      // structured writer above; two writers producing different indentation
+      // would make every later diff noisy.
+      await writeFile(file, `${JSON.stringify(parsed, null, 2)}\n`, "utf8")
+      emitProjectChanged(file)
+      return { ok: true, file, message: `Wrote ${file}.` }
     }
 
     function emitProjectChanged(file: string): void {

@@ -160,6 +160,10 @@ export const Coolify = Rpc.define({
         message: string,
       }),
     },
+    writeProjectJson: {
+      input: object({ directory: string, content: string }, ["directory", "content"]),
+      output: object({ ok: boolean, file: string, message: string }),
+    },
     logs: {
       input: object({ applicationUUID: string, lines: integer }),
       output: object({ logs: string, message: string }),

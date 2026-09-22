@@ -10,6 +10,7 @@ import {
   isWithin,
   normalizePath,
   parseProjectConfig,
+  validateProjectJson,
   selectApplication,
   updateProjectConfig,
 } from "../src/project-config"
@@ -274,5 +275,33 @@ describe("path helpers", () => {
     expect(isWithin("apps/web", "apps/web")).toBe(true)
     expect(isWithin("apps/webbish", "apps/web")).toBe(false)
     expect(isWithin("anything", ".")).toBe(true)
+  })
+})
+
+describe("validateProjectJson", () => {
+  it("accepts an applications map with uuids", () => {
+    expect(validateProjectJson({ applications: { web: { applicationUUID: "app_1" } } })).toBeUndefined()
+  })
+
+  it("accepts the single-application and project-only shorthands", () => {
+    expect(validateProjectJson({ applicationUUID: "app_1" })).toBeUndefined()
+    expect(validateProjectJson({ projectUUID: "proj_1" })).toBeUndefined()
+  })
+
+  it("rejects a config that names no application at all", () => {
+    // Otherwise the sidebar would resolve nothing and say nothing about why.
+    expect(validateProjectJson({ unrelated: true })).toContain("applications")
+    expect(validateProjectJson({ applicationUUID: "   " })).toContain("applications")
+  })
+
+  it("rejects a malformed applications map", () => {
+    expect(validateProjectJson({ applications: [] })).toContain("must be an object")
+    expect(validateProjectJson({ applications: { web: "app_1" } })).toContain("applications.web")
+    expect(validateProjectJson({ applications: { web: { name: "web" } } })).toContain("applicationUUID")
+    expect(validateProjectJson({ applications: { web: { applicationUUID: "" } } })).toContain("applicationUUID")
+  })
+
+  it("rejects a malformed databases map", () => {
+    expect(validateProjectJson({ projectUUID: "p", databases: "nope" })).toContain("databases")
   })
 })

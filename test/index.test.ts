@@ -53,6 +53,15 @@ async function harness(input: HarnessOptions = {}) {
   const tools: any[] = []
   const toolTransforms: ((editor: any) => void)[] = []
   const namespaces: any[] = []
+  const skills: any[] = []
+  const skillTransforms: ((editor: any) => void)[] = []
+  const skillEditor = {
+    add: (skill: any) => void skills.push(skill),
+    update: () => {},
+    remove: () => {},
+    list: () => [],
+    get: () => undefined,
+  }
   const toolEditor = {
     namespace: (ns: any) => void namespaces.push(ns),
     add: (tool: any) => void tools.push(tool),
@@ -88,6 +97,19 @@ async function harness(input: HarnessOptions = {}) {
         for (const callback of toolTransforms) callback(toolEditor)
       },
     },
+    skill: {
+      // Unlike tools, a skill registration takes effect on its own — the plugin
+      // never calls `reload` — so the callback runs here too.
+      transform: async (callback: any) => {
+        skillTransforms.push(callback)
+        callback(skillEditor)
+        return { dispose: async () => {} }
+      },
+      reload: async () => {
+        skills.length = 0
+        for (const callback of skillTransforms) callback(skillEditor)
+      },
+    },
     rpc: {
       register: async (_definition: any, registered: any) => {
         Object.assign(handlers, registered)
@@ -117,6 +139,7 @@ async function harness(input: HarnessOptions = {}) {
     emitted,
     tools,
     namespaces,
+    skills,
     calls: fake.calls,
     store,
     directory,
@@ -404,6 +427,112 @@ describe("configureProject", () => {
     expect(result.ok).toBe(false)
     expect(result.message).toContain("not inside a git repository")
     await expect(readFile(join(directory, "coolify.json"), "utf8")).rejects.toThrow()
+    await h.cleanup()
+  })
+})
+
+describe("skills", () => {
+  it("registers the mapping and deploy skills under stable ids", async () => {
+    const h = await harness({ token: TOKEN })
+
+    const ids = h.skills.map((skill: any) => skill.id)
+    expect(ids).toEqual(["coolify-map", "coolify-deploy"])
+    await h.cleanup()
+  })
+
+  it("gives each skill a description, so the model is told it exists", async () => {
+    // The runtime only lists a skill in the model's guidance when it has a
+    // description, so an empty one would make the skill invisible.
+    const h = await harness({ token: TOKEN })
+
+    for (const skill of h.skills) {
+      expect(typeof skill.description).toBe("string")
+      expect(skill.description.length).toBeGreaterThan(20)
+      expect(skill.content.length).toBeGreaterThan(100)
+      expect(skill.path).toContain(skill.id)
+    }
+    await h.cleanup()
+  })
+})
+
+describe("writeProjectJson", () => {
+  const config = JSON.stringify({ applications: { web: { applicationUUID: "app_1" } } })
+
+  async function repo(): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await mkdir(join(directory, ".git"), { recursive: true })
+    return directory
+  }
+
+  it("writes a pasted config and announces it", async () => {
+    const directory = await repo()
+    const h = await harness({ token: TOKEN, directory })
+
+    const result = await h.handlers.writeProjectJson({ directory, content: config })
+
+    expect(result.ok).toBe(true)
+    const written = JSON.parse(await readFile(join(directory, "coolify.json"), "utf8"))
+    expect(written.applications.web.applicationUUID).toBe("app_1")
+    expect(h.emitted.some((event) => event.name === "project.changed")).toBe(true)
+    await h.cleanup()
+  })
+
+  it("normalises formatting so the two writers agree", async () => {
+    const directory = await repo()
+    const h = await harness({ token: TOKEN, directory })
+
+    await h.handlers.writeProjectJson({ directory, content: '{"applications":{"web":{"applicationUUID":"app_1"}}}' })
+
+    const raw = await readFile(join(directory, "coolify.json"), "utf8")
+    expect(raw).toBe(`${JSON.stringify(JSON.parse(config), null, 2)}\n`)
+    await h.cleanup()
+  })
+
+  it("refuses text that is not JSON, and writes nothing", async () => {
+    const directory = await repo()
+    const h = await harness({ token: TOKEN, directory })
+
+    const result = await h.handlers.writeProjectJson({ directory, content: "not json at all" })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("not valid JSON")
+    await expect(readFile(join(directory, "coolify.json"), "utf8")).rejects.toThrow()
+    await h.cleanup()
+  })
+
+  it("refuses a config that names no application", async () => {
+    const directory = await repo()
+    const h = await harness({ token: TOKEN, directory })
+
+    const result = await h.handlers.writeProjectJson({ directory, content: '{"unrelated": true}' })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("applications")
+    await h.cleanup()
+  })
+
+  it("refuses an application entry with no uuid", async () => {
+    const directory = await repo()
+    const h = await harness({ token: TOKEN, directory })
+
+    const result = await h.handlers.writeProjectJson({
+      directory,
+      content: '{"applications": {"web": {"name": "web"}}}',
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("applicationUUID")
+    await h.cleanup()
+  })
+
+  it("refuses outside a repository rather than scattering a config", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    const h = await harness({ token: TOKEN, directory })
+
+    const result = await h.handlers.writeProjectJson({ directory, content: config })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("not inside a git repository")
     await h.cleanup()
   })
 })

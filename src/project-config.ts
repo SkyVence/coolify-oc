@@ -64,6 +64,50 @@ export interface ProjectConfig {
 
 export const CONFIG_FILENAMES = ["coolify.json", ".coolify.json"] as const
 
+/**
+ * Why a pasted config cannot be used, or `undefined` when it is usable.
+ *
+ * Deliberately shallow: it checks the file has the right shape, not that every
+ * UUID exists on the instance. Whether a UUID is real is what `coolify_resolve`
+ * reports, and inventing one is a mistake the caller can still make — but a
+ * config with no application at all would leave the sidebar silently unable to
+ * resolve anything, which is worse than refusing the write.
+ */
+export function validateProjectJson(record: Record<string, unknown>): string | undefined {
+  const applications = record.applications
+  const single = record.applicationUUID
+  const project = record.projectUUID
+  const hasSingle = typeof single === "string" && single.trim() !== ""
+  const hasProject = typeof project === "string" && project.trim() !== ""
+
+  if (applications === undefined && !hasSingle && !hasProject) {
+    return "coolify.json needs an `applications` map, an `applicationUUID`, or a `projectUUID`."
+  }
+
+  if (applications !== undefined) {
+    if (applications === null || typeof applications !== "object" || Array.isArray(applications)) {
+      return "`applications` must be an object keyed by name."
+    }
+    for (const [key, value] of Object.entries(applications as Record<string, unknown>)) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return `\`applications.${key}\` must be an object.`
+      }
+      const uuid = (value as Record<string, unknown>).applicationUUID
+      if (typeof uuid !== "string" || uuid.trim() === "") {
+        return `\`applications.${key}.applicationUUID\` must be a non-empty string.`
+      }
+    }
+  }
+
+  const databases = record.databases
+  if (databases !== undefined && (databases === null || typeof databases !== "object" || Array.isArray(databases))) {
+    return "`databases` must be an object keyed by name."
+  }
+
+  return undefined
+}
+
+
 /** A parsed config that has never been written, used when starting from scratch. */
 export function emptyProjectConfig(file: string): ProjectConfig {
   return {

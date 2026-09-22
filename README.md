@@ -48,10 +48,32 @@ OpenCode 2.0.10 does not load plugins listed only in the global
 | `/coolify-map` | Resolves this repository against Coolify and writes `coolify.json`. No model turn. |
 | `/coolify-deploy` | Deploys in a **background tab**, so the current conversation keeps running. |
 
-The sidebar shows the instance, the working directory it is answering for, the
-token's level of access, and one row per application with a status light, a
-compact state and a refresh countdown. Clicking a row offers Deploy, Logs,
-Restart and Roll back.
+The sidebar shows the instance, the working directory it is answering for, and
+one row per application with a status light, a compact state and a refresh
+countdown. Clicking a row offers Deploy, Logs, Restart and Roll back. An
+unmapped project shows a `map` link beside it: the first click maps with the
+model in a background tab, a second click opens a paste box for a
+`coolify.json` you supply yourself. The token's level of access lives in
+**Configure**, next to the instance it describes.
+
+## Skills
+
+The plugin registers two skills, so a client that exposes skills but not plugin
+tools can use them too:
+
+| Skill | What it does |
+| --- | --- |
+| `coolify-map` | Inspect the repository and record its Coolify mapping in `coolify.json`. |
+| `coolify-deploy` | Set up and deploy the project: application settings, databases, domain, port. |
+
+Both appear in the model's skill guidance and can be loaded with the `skill`
+tool. The sidebar's deploy and map actions reference them rather than pasting
+instructions, so there is one copy of each.
+
+The `/coolify-map` command and the `coolify-map` skill are deliberately
+different tools: the command is the deterministic path, matching this directory
+against Coolify with no model turn, while the skill is the model-driven path for
+a monorepo or an ambiguous match.
 
 ## Configuration
 
