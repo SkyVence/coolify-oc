@@ -26,7 +26,9 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "bun run typecheck && bun run test",
+    "prepublishOnly": "bun run check"
   },
   "dependencies": {
     "@opencode/plugin": "^2.0.13"

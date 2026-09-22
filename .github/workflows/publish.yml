@@ -1,0 +1,41 @@
+# Publishes to npm when a version tag is pushed.
+#
+# Dormant until the repository has a remote and the NPM_TOKEN secret exists.
+# See RELEASING.md — the first few releases are meant to be done by hand.
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for npm provenance, which ties the tarball to this commit.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # Same gate as prepublishOnly, run explicitly so a failure is obvious.
+      - run: bun run check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # A Granular Access Token with "Read and write" on packages, stored as
+      # NPM_TOKEN. An automation token bypasses the 2FA prompt that would
+      # otherwise block a non-interactive publish.
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
