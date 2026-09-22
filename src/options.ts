@@ -25,3 +25,17 @@ export function parseRefreshSeconds(value: unknown): number {
   if (value < MIN_REFRESH_SECONDS || value > MAX_REFRESH_SECONDS) return DEFAULT_REFRESH_SECONDS
   return value
 }
+
+/**
+ * Whether to look for every `coolify.json` in the repository and show one
+ * section per project.
+ *
+ * Off by default: most repositories have a single config, and walking the tree
+ * on every sidebar refresh is wasted work for them. Only an explicit `true`
+ * turns it on, so a typo or a string cannot enable it by accident.
+ */
+export const DEFAULT_RECURSIVE_PROJECTS = false
+
+export function parseRecursiveProjects(value: unknown): boolean {
+  return value === true
+}

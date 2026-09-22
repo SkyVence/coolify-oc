@@ -285,6 +285,66 @@ describe("applications payload", () => {
   })
 })
 
+describe("recursiveProjects toggle", () => {
+  async function twoConfigRepo(): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await mkdir(join(directory, ".git"), { recursive: true })
+    await mkdir(join(directory, "apps", "web"), { recursive: true })
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({ applications: { worker: { applicationUUID: "app_w" } } }),
+      "utf8",
+    )
+    await writeFile(
+      join(directory, "apps", "web", "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_1" } } }),
+      "utf8",
+    )
+    return directory
+  }
+
+  const routes: FakeRoute[] = [
+    ...ROOT_PROBES,
+    { method: "GET", path: "/applications/app_w", status: 200, body: { uuid: "app_w", name: "worker" } },
+  ]
+
+  it("looks at one config only by default", async () => {
+    const directory = await twoConfigRepo()
+    const h = await harness({ token: TOKEN, routes })
+
+    const payload = await h.handlers.applications({ scope: "mapped", directory })
+
+    expect(payload.recursiveProjects).toBe(false)
+    // No groups, so the sidebar renders the single nearest config from `apps`.
+    expect(payload.projects ?? []).toHaveLength(0)
+    expect(payload.apps.map((app: any) => app.name)).toEqual(["worker"])
+    await h.cleanup()
+  })
+
+  it("shows one group per config when switched on", async () => {
+    const directory = await twoConfigRepo()
+    const h = await harness({ token: TOKEN, routes, options: { recursiveProjects: true } })
+
+    const payload = await h.handlers.applications({ scope: "mapped", directory })
+
+    expect(payload.recursiveProjects).toBe(true)
+    expect(payload.projects).toHaveLength(2)
+    expect(payload.projects.map((group: any) => group.relativeFile).sort()).toEqual([
+      "apps/web/coolify.json",
+      "coolify.json",
+    ])
+    await h.cleanup()
+  })
+
+  it("stays off for anything that is not the boolean true", async () => {
+    const directory = await twoConfigRepo()
+    const h = await harness({ token: TOKEN, routes, options: { recursiveProjects: "true" } })
+
+    expect((await h.handlers.applications({ scope: "mapped", directory })).recursiveProjects).toBe(false)
+    await h.cleanup()
+  })
+})
+
 describe("configureProject", () => {
   it("writes inside a repository and announces it", async () => {
     const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))

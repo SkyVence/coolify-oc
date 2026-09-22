@@ -58,6 +58,7 @@ Clicking a row offers Deploy, Logs, Restart and Roll back.
 | --- | --- | --- | --- |
 | `endpoint` | string | — | Your Coolify base URL. `https://host`, `host` and `https://host/api/v1` all work. |
 | `refreshSeconds` | integer 5–600 | `25` | Sidebar cadence. Automatically faster while a deployment or restart is in flight. |
+| `recursiveProjects` | boolean | `false` | Look for **every** `coolify.json` in the repository and show one section per project. Off by default; only the literal `true` enables it. |
 
 The API token is stored by OpenCode as a credential, never in configuration.
 `COOLIFY_ENDPOINT` is used when no `endpoint` option is set.
@@ -83,9 +84,11 @@ monorepo — to Coolify resources:
 }
 ```
 
-- Discovery walks **down** from the repository root (4 levels), skipping
-  `node_modules`, `.git`, `dist`, `build`, `.next`, `coverage`, `.turbo` and
-  `vendor`. **Each config gets its own sidebar section.**
+- By default only the **nearest** config is used — the one that owns the
+  directory you are in. Set `recursiveProjects: true` to walk **down** from the
+  repository root (4 levels, skipping `node_modules`, `.git`, `dist`, `build`,
+  `.next`, `coverage`, `.turbo` and `vendor`) and show **one sidebar section per
+  config** instead.
 - `path` is repo-relative and the longest match wins, so `apps/web/admin`
   resolves the `apps/web` entry.
 - Lookup order: `coolify.json` → a pinned link → matching the git remote, then

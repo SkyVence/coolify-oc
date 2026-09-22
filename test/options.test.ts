@@ -3,6 +3,7 @@ import {
   DEFAULT_REFRESH_SECONDS,
   MAX_REFRESH_SECONDS,
   MIN_REFRESH_SECONDS,
+  parseRecursiveProjects,
   parseRefreshSeconds,
 } from "../src/options"
 
@@ -31,5 +32,15 @@ describe("parseRefreshSeconds", () => {
     expect(parseRefreshSeconds(null)).toBe(25)
     expect(parseRefreshSeconds(true)).toBe(25)
     expect(parseRefreshSeconds({})).toBe(25)
+  })
+})
+
+describe("parseRecursiveProjects", () => {
+  it("is off unless explicitly true", () => {
+    expect(parseRecursiveProjects(undefined)).toBe(false)
+    expect(parseRecursiveProjects(false)).toBe(false)
+    expect(parseRecursiveProjects("true")).toBe(false)
+    expect(parseRecursiveProjects(1)).toBe(false)
+    expect(parseRecursiveProjects(true)).toBe(true)
   })
 })

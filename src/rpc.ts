@@ -322,6 +322,8 @@ export interface ApplicationsPayload {
   readonly environmentName?: string
   readonly configFile?: string
   readonly scope?: "mapped" | "project"
+  /** Whether the repository was walked for further configs. */
+  readonly recursiveProjects?: boolean
   /** Idle refresh cadence the plugin was configured with, in seconds. */
   readonly refreshSeconds?: number
   readonly apps?: readonly AppStatusPayload[]

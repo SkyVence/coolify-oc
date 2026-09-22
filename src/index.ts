@@ -24,7 +24,7 @@ import {
   type CoolifyDeployment,
 } from "./coolify/types"
 import { parseApplicationStatus } from "./coolify/runtime"
-import { parseRefreshSeconds } from "./options"
+import { parseRecursiveProjects, parseRefreshSeconds } from "./options"
 import {
   findAllProjectConfigs,
   findProjectConfig,
@@ -72,6 +72,8 @@ export default Plugin.define({
 
     /** Idle sidebar cadence, chosen by the `refreshSeconds` option. */
     const refreshSeconds = parseRefreshSeconds(ctx.options.refreshSeconds)
+    /** One section per config in the repository. Off unless asked for. */
+    const recursiveProjects = parseRecursiveProjects(ctx.options.recursiveProjects)
 
     /** How long a capability report is trusted without a fresh probe. */
     const CAPABILITY_TTL_MS = 10 * 60 * 1_000
@@ -626,9 +628,9 @@ export default Plugin.define({
         await Promise.all(
           members.slice(0, 20).map((member) => describe(apps, member.name, member.uuid, undefined, false)),
         )
-      } else if (directory && directory !== "") {
-        // A repository can hold several configs. The caller named a directory,
-        // so discover them all from the repository root and render each group.
+      } else if (recursiveProjects) {
+        // Opt-in: a repository can hold several configs, so discover them all
+        // from the repository root and render one section per group.
         const root = await findRepositoryRoot(base)
         const configs = await findAllProjectConfigs(root)
         // `findProjectConfig` is nearest-wins; when the owning config sits
@@ -667,6 +669,7 @@ export default Plugin.define({
         ...(configFile ? { configFile } : {}),
         scope: mode,
         refreshSeconds,
+        recursiveProjects,
         apps,
         ...(projects && projects.length > 0 ? { projects } : {}),
         capabilities: capabilitiesPayload(),
