@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import type { Integration } from "@opencode/plugin"
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import type { KeymapLayer } from "@opencode/plugin/tui/context"
