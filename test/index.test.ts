@@ -398,6 +398,15 @@ describe("RPC output schema", () => {
   })
 })
 
+describe("RPC input schemas", () => {
+  it("lets directory-aware handlers explain when the directory is unavailable", () => {
+    for (const method of ["resolve", "applications"] as const) {
+      const input = CoolifyRpc.methods[method].input as { required?: readonly string[] }
+      expect(input.required ?? []).not.toContain("directory")
+    }
+  })
+})
+
 describe("configureProject", () => {
   it("writes inside a repository and announces it", async () => {
     const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))

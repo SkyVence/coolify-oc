@@ -700,7 +700,12 @@ function CoolifySidebar(props: {
         // The RPC `location` option is not honoured, so the directory travels in
         // the input instead. Without it the server answers for its own default
         // location and a freshly mapped project shows nothing.
-        const payload = (await rpc.applications({ scope: "mapped", directory: directory() })) as ApplicationsPayload
+        const base = directory()
+        setNoDirectory(base === undefined)
+        const payload = (await rpc.applications({
+          scope: "mapped",
+          ...(base === undefined ? {} : { directory: base }),
+        })) as ApplicationsPayload
         const nextRows = payload.apps ?? []
         cadence = payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
         const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, Date.now(), STARTING_TIMEOUT_MS)
