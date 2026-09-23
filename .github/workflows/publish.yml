@@ -47,7 +47,9 @@ jobs:
       # anyone pinned to them; the versions themselves are still installable.
       # Non-fatal: trusted publishing may not authorise deprecation.
       - continue-on-error: true
-        run: npm deprecate '@skyvence/coolify-oc@>=0.2.0 <0.2.9' "Broken TUI packaging: the sidebar never updates. Upgrade to 0.2.9 or newer."
+        run: >-
+          npm deprecate '@skyvence/coolify-oc@>=0.2.0 <0.2.9'
+          'Broken TUI packaging - the sidebar never updates. Upgrade to 0.2.9 or newer.'
 
   # Runs only once the package is on npm, so a GitHub release never advertises
   # a version that failed to publish. `--generate-notes` builds the body from
