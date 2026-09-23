@@ -146,6 +146,7 @@ export default Plugin.define({
           toast(saved.message ?? "That endpoint was rejected.", "error")
           return false
         }
+        sidebarControls?.refresh()
         toast(`Using ${saved.endpoint}.`, "success")
         return true
       } catch (cause) {
@@ -173,6 +174,7 @@ export default Plugin.define({
           toast(result.message ?? "Token stored, but the instance could not be reached.", "warning")
           return false
         }
+        sidebarControls?.refresh()
         toast(`Connected to ${result.team?.name ?? result.endpoint ?? "Coolify"}.`, "success")
         return true
       } catch (cause) {
