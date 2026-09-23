@@ -19,7 +19,7 @@ jobs:
       # The OIDC token that trusted publishing exchanges for a credential.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -30,7 +30,7 @@ jobs:
       # Same gate as prepublishOnly, run explicitly so a failure is obvious.
       - run: bun run check
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -51,7 +51,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - env:
           GH_TOKEN: ${{ github.token }}
