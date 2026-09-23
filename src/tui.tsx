@@ -2,7 +2,6 @@
 import type { Integration } from "@opencode/plugin"
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import type { KeymapLayer } from "@opencode/plugin/tui/context"
-import { TextAttributes } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { normalizeDeploymentStatus } from "./coolify/deploy"
 import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
@@ -19,6 +18,16 @@ import {
 } from "./rpc"
 
 const INTEGRATION_ID = "coolify" as Integration.ID
+/**
+ * The text-attribute bit flag for bold.
+ *
+ * Inlined rather than imported from `@opentui/core`, which the host does not
+ * provide to plugins: importing it makes the bundled TUI fail to load with
+ * "Cannot find package '@opentui/core'". `@opentui/solid` and `solid-js` are
+ * host-provided, so the sidebar keeps using those. `BOLD` is
+ * `1 << 0`.
+ */
+const BOLD = 1
 /** How many application rows the sidebar shows before it stops. */
 const MAX_ROWS = 4
 /**
@@ -811,7 +820,7 @@ function CoolifySidebar(props: {
           directory is on screen because a wrong project is otherwise invisible,
           which is exactly how a shared-state bug hides. */}
       <box flexDirection="row" gap={1} onMouseUp={() => void load()}>
-        <text attributes={TextAttributes.BOLD} fg={theme().base} flexShrink={0}>
+        <text attributes={BOLD} fg={theme().base} flexShrink={0}>
           Coolify
         </text>
         <Show when={busy()}>
@@ -971,7 +980,7 @@ function ProjectJsonPopup(props: {
 
   return (
     <box flexDirection="column" gap={1} padding={1}>
-      <text attributes={TextAttributes.BOLD} fg={theme().base}>
+      <text attributes={BOLD} fg={theme().base}>
         Paste coolify.json
       </text>
       <text fg={theme().muted} wrapMode="none" truncate>
@@ -1063,7 +1072,7 @@ function SetupPopup(props: {
 
   return (
     <box flexDirection="column" gap={1} padding={1}>
-      <text attributes={TextAttributes.BOLD} fg={theme().base}>
+      <text attributes={BOLD} fg={theme().base}>
         Coolify instance
       </text>
 
