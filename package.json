@@ -1,6 +1,6 @@
 {
   "name": "@skyvence/coolify-oc",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Deploy and configure projects on a self-hosted Coolify instance from OpenCode, with a TUI panel and model-facing tools.",
   "license": "MIT",
   "type": "module",

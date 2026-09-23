@@ -61,6 +61,17 @@ interface SidebarControls {
   readonly setBusy: (value: boolean) => void
 }
 
+/**
+ * The setup context, threaded into components instead of read with `usePlugin`.
+ *
+ * `usePlugin` looks the host's context up through Solid's `useContext`. The
+ * published bundle resolves its own Solid, so that lookup crosses runtime
+ * instances and throws "PluginContextProvider is missing". Passing the context
+ * `setup` already received side-steps the lookup entirely — which is how the
+ * other packaged TUI plugins do it.
+ */
+type PluginContext = ReturnType<typeof usePlugin>
+
 export default Plugin.define({
   id: "opencode.coolify.tui",
   setup(context) {
@@ -294,6 +305,7 @@ export default Plugin.define({
         context.ui.dialog.show(
           () => (
             <ProjectJsonPopup
+              context={context}
               onSubmit={(content) => {
                 draft = content
                 finish()
@@ -406,6 +418,7 @@ export default Plugin.define({
       context.ui.dialog.set({ size: "medium", centered: true })
       context.ui.dialog.show(() => (
         <SetupPopup
+          context={context}
           directory={sessionDirectory()}
           onSetEndpoint={async () => {
             await promptEndpoint()
@@ -626,6 +639,7 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (input) => (
         <CoolifySidebar
+          context={context}
           sessionID={input.sessionID}
           onAppActions={openAppActions}
           onAllApps={() => openAllApps(sessionDirectory())}
@@ -649,6 +663,7 @@ export default Plugin.define({
  * into the per-application dialog.
  */
 function CoolifySidebar(props: {
+  context: PluginContext
   sessionID: string
   onAppActions: (app: AppStatusPayload) => Promise<void>
   onAllApps: () => Promise<void>
@@ -656,7 +671,7 @@ function CoolifySidebar(props: {
   onLinkFirst: () => Promise<void>
   onReady: (controls: SidebarControls) => void
 }) {
-  const context = usePlugin()
+  const context = props.context
   const rpc = context.client.rpc(CoolifyRpc)
   const theme = () => context.theme.text
   const surface = () => context.theme.background
@@ -842,36 +857,51 @@ function CoolifySidebar(props: {
                 </text>
               </Show>
 
-              <For each={group.apps.slice(0, MAX_ROWS)}>
-                {(app, index) => {
-                  // Each section owns its rows, so hover is keyed per group.
-                  const key = `${groupIndex()}:${index()}`
-                  return (
-                    <box
-                      flexDirection="row"
-                      gap={1}
-                      backgroundColor={hover() === key ? surface().raised?.high : undefined}
-                      onMouseOver={() => setHover(key)}
-                      onMouseOut={() => setHover(null)}
-                      onMouseUp={() => void props.onAppActions(app)}
-                    >
-                      <Show
-                        when={isStarting(app)}
-                        fallback={<text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>}
-                      >
-                        <text fg={theme().feedback.info?.base ?? theme().base}>
-                          {SPINNER[frame() % SPINNER.length]}
-                        </text>
-                      </Show>
-                      <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
-                        {app.name}
+              <For each={group.environments}>
+                {(environment, envIndex) => (
+                  <box flexDirection="column">
+                    {/* A repository often maps the same application once per
+                        environment, so the environment is a section of its
+                        own whenever a config spans more than one. */}
+                    <Show when={group.environments.length > 1}>
+                      <text fg={theme().muted} wrapMode="none" truncate>
+                        {environment.environment ?? "no environment"}
                       </text>
-                      <text fg={theme().muted} wrapMode="none" flexShrink={0}>
-                        {appRowState(app)}
-                      </text>
-                    </box>
-                  )
-                }}
+                    </Show>
+
+                    <For each={environment.apps.slice(0, MAX_ROWS)}>
+                      {(app, index) => {
+                        // Each section owns its rows, so hover is keyed per group.
+                        const key = `${groupIndex()}:${envIndex()}:${index()}`
+                        return (
+                          <box
+                            flexDirection="row"
+                            gap={1}
+                            backgroundColor={hover() === key ? surface().raised?.high : undefined}
+                            onMouseOver={() => setHover(key)}
+                            onMouseOut={() => setHover(null)}
+                            onMouseUp={() => void props.onAppActions(app)}
+                          >
+                            <Show
+                              when={isStarting(app)}
+                              fallback={<text fg={toneColour(theme(), appRowTone(app))}>{statusLight(appRowTone(app))}</text>}
+                            >
+                              <text fg={theme().feedback.info?.base ?? theme().base}>
+                                {SPINNER[frame() % SPINNER.length]}
+                              </text>
+                            </Show>
+                            <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                              {app.name}
+                            </text>
+                            <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+                              {appRowState(app)}
+                            </text>
+                          </box>
+                        )
+                      }}
+                    </For>
+                  </box>
+                )}
               </For>
 
               <Show when={group.apps.length > MAX_ROWS}>
@@ -927,10 +957,11 @@ function CoolifySidebar(props: {
  * which is what a multi-line paste needs.
  */
 function ProjectJsonPopup(props: {
+  context: PluginContext
   onSubmit: (content: string) => void
   onCancel: () => void
 }) {
-  const context = usePlugin()
+  const context = props.context
   const theme = () => context.theme.text
   const action = () => theme().feedback.info?.base ?? theme().base
   // Structurally typed: only `plainText` is needed, so the renderable class
@@ -973,11 +1004,12 @@ function ProjectJsonPopup(props: {
  * whether the token works, and one button per setting.
  */
 function SetupPopup(props: {
+  context: PluginContext
   directory?: string
   onSetEndpoint: () => Promise<void>
   onSetToken: () => Promise<void>
 }) {
-  const context = usePlugin()
+  const context = props.context
   const rpc = context.client.rpc(CoolifyRpc)
   const theme = () => context.theme.text
   const action = () => theme().feedback.info?.base ?? theme().base
@@ -1327,12 +1359,47 @@ function activeCadence(idleSeconds: number): number {
   return Math.max(1, Math.min(REFRESH_SECONDS_ACTIVE, idleSeconds - 1))
 }
 
+/** One environment's rows inside a config section. */
+export interface ApplicationEnvironmentView {
+  /** The Coolify environment name, absent when the application reported none. */
+  readonly environment?: string
+  readonly apps: readonly AppStatusPayload[]
+}
+
 /** One rendered section of the sidebar: a config and its applications. */
 export interface ApplicationGroupView {
   /** Shown only when the payload carries more than one config. */
   readonly heading?: string
   readonly configFile?: string
   readonly apps: readonly AppStatusPayload[]
+  /** The same applications, split by environment, in first-seen order. */
+  readonly environments: readonly ApplicationEnvironmentView[]
+}
+
+/**
+ * Split a config's applications by Coolify environment, keeping first-seen
+ * order.
+ *
+ * A `coolify.json` maps one entry per environment — `api` and `api-staging`
+ * both deploying an application Coolify calls `api` — so grouping by
+ * environment is what stops those rows looking like duplicates.
+ */
+export function environmentGroups(apps: readonly AppStatusPayload[]): readonly ApplicationEnvironmentView[] {
+  const order: string[] = []
+  const byEnvironment = new Map<string, AppStatusPayload[]>()
+  for (const app of apps) {
+    const key = app.environment ?? ""
+    const bucket = byEnvironment.get(key)
+    if (bucket) bucket.push(app)
+    else {
+      byEnvironment.set(key, [app])
+      order.push(key)
+    }
+  }
+  return order.map((key) => ({
+    ...(key === "" ? {} : { environment: key }),
+    apps: byEnvironment.get(key) ?? [],
+  }))
 }
 
 /**
@@ -1366,13 +1433,16 @@ export function applicationGroups(payload: ApplicationsPayload | undefined): rea
         ...(heading === undefined ? {} : { heading }),
         configFile: project.configFile,
         apps: project.apps,
+        environments: environmentGroups(project.apps),
       }
     })
   }
+  const apps = payload?.apps ?? []
   return [
     {
       ...(payload?.configFile === undefined ? {} : { configFile: payload.configFile }),
-      apps: payload?.apps ?? [],
+      apps,
+      environments: environmentGroups(apps),
     },
   ]
 }

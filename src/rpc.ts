@@ -293,6 +293,12 @@ export interface AppStatusPayload {
   readonly name: string
   readonly path?: string
   readonly domains?: string | null
+  /**
+   * The Coolify environment the application lives in ("production",
+   * "staging", …). Used to group rows: a repository often maps the same
+   * application name once per environment.
+   */
+  readonly environment?: string
   readonly runtime?: RuntimePayload
   readonly latestDeployment?: DeploymentPayload
   /** True for the entry that owns the working directory. */

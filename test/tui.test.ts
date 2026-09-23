@@ -8,6 +8,7 @@ import {
   appRowLabel,
   appRowState,
   appRowTone,
+  environmentGroups,
   isLinked,
   markStartingUp,
   parseCoolifyArgument,
@@ -531,8 +532,11 @@ describe("applicationGroups", () => {
   const app = (name: string) => ({ key: name, applicationUUID: `${name}_uuid`, name }) as any
 
   it("keeps the single headingless group for one config, or none", () => {
-    expect(applicationGroups({ connected: true, apps: [app("web")] } as any)).toEqual([{ apps: [app("web")] }])
-    expect(applicationGroups(undefined)).toEqual([{ apps: [] }])
+    const web = app("web")
+    expect(applicationGroups({ connected: true, apps: [web] } as any)).toEqual([
+      { apps: [web], environments: [{ apps: [web] }] },
+    ])
+    expect(applicationGroups(undefined)).toEqual([{ apps: [], environments: [] }])
   })
 
   it("renders one headed section per config when several are present", () => {
@@ -616,6 +620,36 @@ describe("application rows", () => {
     const row = app({ runtime: { state: "running", health: "unhealthy", label: "running (unhealthy)", raw: "running:unhealthy" } })
     expect(appRowState(row)).toBe("running !")
     expect(appRowTone(row)).toBe("warn")
+  })
+})
+
+describe("environmentGroups", () => {
+  const app = (over: any = {}) => ({ key: "web", applicationUUID: "a1", name: "web", ...over })
+
+  it("splits rows by environment, keeping first-seen order", () => {
+    const groups = environmentGroups([
+      app({ key: "web", name: "web", environment: "production" }),
+      app({ key: "web-staging", name: "web", environment: "staging" }),
+      app({ key: "api", name: "api", environment: "production" }),
+    ])
+
+    expect(groups.map((group) => group.environment)).toEqual(["production", "staging"])
+    expect(groups[0]?.apps.map((entry) => entry.key)).toEqual(["web", "api"])
+    expect(groups[1]?.apps.map((entry) => entry.key)).toEqual(["web-staging"])
+  })
+
+  it("keeps applications that report no environment in an unnamed group", () => {
+    const groups = environmentGroups([app({ key: "web", name: "web" }), app({ key: "api", name: "api" })])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.environment).toBeUndefined()
+    expect(groups[0]?.apps).toHaveLength(2)
+  })
+
+  it("returns one group for a single environment", () => {
+    const groups = environmentGroups([app({ environment: "production" }), app({ key: "api", environment: "production" })])
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.environment).toBe("production")
   })
 })
 

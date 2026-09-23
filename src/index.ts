@@ -629,6 +629,7 @@ export default Plugin.define({
           name: application?.name ?? key,
           ...(path ? { path } : {}),
           ...(application?.fqdn ? { domains: application.fqdn } : {}),
+          ...(application?.environment_name ? { environment: application.environment_name } : {}),
           runtime: parseApplicationStatus(application?.status),
           ...(latest
             ? {
