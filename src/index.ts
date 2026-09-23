@@ -80,6 +80,32 @@ export default Plugin.define({
     /** One section per config in the repository. Off unless asked for. */
     const recursiveProjects = parseRecursiveProjects(ctx.options.recursiveProjects)
 
+    /**
+     * Re-read the endpoint from storage.
+     *
+     * Storage is shared by every instance with this plugin id, so the setting
+     * can change underneath a long-running one — written from another location,
+     * or by a CLI call. Reading it only at setup left such an instance insisting
+     * the plugin was unconfigured until it restarted, which looks exactly like a
+     * wiped config. Options win over storage, as they do at setup.
+     *
+     * A change invalidates the cached report and client, both of which belong to
+     * the old endpoint.
+     */
+    async function syncEndpoint(): Promise<void> {
+      const previous = normalizedEndpoint
+      const fromOptions = normalizeOrUndefined(readEndpoint(ctx.options))
+      if (fromOptions) {
+        normalizedEndpoint = fromOptions
+      } else {
+        settings = await readSettings(store)
+        normalizedEndpoint = normalizeOrUndefined(settings.endpoint)
+      }
+      if (normalizedEndpoint === previous) return
+      client = undefined
+      capabilities = undefined
+    }
+
     /** How long a capability report is trusted without a fresh probe. */
     const CAPABILITY_TTL_MS = 10 * 60 * 1_000
 
@@ -458,6 +484,7 @@ export default Plugin.define({
     }
 
     async function doRefresh(reason: string, force: boolean): Promise<void> {
+      await syncEndpoint()
       if (!normalizedEndpoint) {
         client = undefined
         capabilities = undefined
@@ -551,6 +578,10 @@ export default Plugin.define({
      */
     async function applicationsPayload(scope: string | undefined, directory?: string): Promise<ApplicationsPayload> {
       const mode: "mapped" | "project" = scope === "project" ? "project" : "mapped"
+      await syncEndpoint()
+      // An endpoint that appeared since this instance started has no client yet,
+      // so build one before deciding the plugin is unconfigured.
+      if (!client && normalizedEndpoint) await refresh("applications")
       if (!client) return { scope: mode, refreshSeconds, apps: [], ...capabilitiesPayload() }
 
       // The RPC `location` option is not honoured, so the caller states which

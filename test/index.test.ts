@@ -431,6 +431,27 @@ describe("configureProject", () => {
   })
 })
 
+describe("endpoint sync", () => {
+  it("picks up an endpoint written after setup, instead of staying unconfigured", async () => {
+    // An empty option falls through to storage, which is how a long-running
+    // instance starts when nothing has configured it yet.
+    const h = await harness({ token: TOKEN, options: { endpoint: "" } })
+
+    const before = await h.handlers.applications({ scope: "mapped", directory: h.directory })
+    expect(before.connected).toBe(false)
+    expect(before.endpointConfigured).toBe(false)
+
+    // Another instance of this plugin id writes the endpoint into the shared
+    // storage. This process should not have to restart to notice.
+    await h.store.set("settings", { endpoint: ENDPOINT })
+
+    const after = await h.handlers.applications({ scope: "mapped", directory: h.directory })
+    expect(after.endpointConfigured).toBe(true)
+    expect(after.connected).toBe(true)
+    await h.cleanup()
+  })
+})
+
 describe("skills", () => {
   it("registers the mapping and deploy skills under stable ids", async () => {
     const h = await harness({ token: TOKEN })
