@@ -520,7 +520,7 @@ export default Plugin.define({
           connected: false,
           endpointConfigured: false,
           message:
-            "No Coolify endpoint is configured. Run `/coolify-connect` to set one, or set the `COOLIFY_ENDPOINT` environment variable.",
+            "No Coolify endpoint is configured. Run `/coolify instance` to set one, or set the `COOLIFY_ENDPOINT` environment variable.",
         }
       }
       if (!capabilities) {
@@ -530,7 +530,7 @@ export default Plugin.define({
           endpointConfigured: true,
           message: credentialPresent
             ? "The API token could not be probed. Check that API access is enabled on the instance."
-            : "No Coolify API token is connected. Run `/coolify-connect`.",
+            : "No Coolify API token is connected. Run `/coolify token`.",
         }
       }
       return {
