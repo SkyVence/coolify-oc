@@ -198,12 +198,18 @@ Coolify without entering the conversation.
 bun install
 bun run check   # tsc --noEmit + vitest
 bun run test
+bun run build   # bundles src/ to dist/ (external: solid-js, @opentui/*, @opencode/*)
 ```
 
-Opening OpenCode in this repository runs the working tree, not the published
-package. `.opencode/plugins/coolify-local/` re-exports `src/` under the ids
-`opencode.coolify.local` and `opencode.coolify.local.tui`, and `opencode.jsonc`
-turns off the global package for this project. Edits under `src/` hot-reload.
+The published package ships `dist/` — bundled ESM with `solid-js`,
+`@opentui/*` and `@opencode/*` left external, the way OpenCode's own TUI
+plugins are distributed. Shipping raw `src/` instead gives the plugin a second
+Solid runtime, which silently freezes sidebar updates.
+
+The working-tree dev plugin is loaded globally from
+`~/.config/opencode/plugins/coolify-local/`, which re-exports `src/` under the
+ids `opencode.coolify.local` and `opencode.coolify.local.tui`. Edits under
+`src/` hot-reload.
 
 ## Limitations
 

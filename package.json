@@ -1,6 +1,6 @@
 {
   "name": "@skyvence/coolify-oc",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Deploy and configure projects on a self-hosted Coolify instance from OpenCode, with a TUI panel and model-facing tools.",
   "license": "MIT",
   "type": "module",
@@ -23,22 +23,22 @@
     "access": "public"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./tui": "./src/tui.tsx",
-    "./rpc": "./src/rpc.ts",
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "src",
+    "dist",
     "README.md",
     "NAMING.md",
     "LICENSE"
   ],
   "scripts": {
+    "build": "bun build src/index.ts src/tui.tsx --outdir dist --target node --format esm --packages external --production",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "bun run typecheck && bun run test",
-    "prepublishOnly": "bun run check"
+    "prepublishOnly": "bun run check && bun run build"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.13"

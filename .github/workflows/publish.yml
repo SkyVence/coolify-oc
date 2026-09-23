@@ -42,6 +42,13 @@ jobs:
       # token instead of the OIDC exchange.
       - run: npm publish --access public --provenance
 
+      # 0.2.0-0.2.8 were published from raw TypeScript sources, which gives the
+      # TUI plugin its own Solid runtime and freezes sidebar updates. Warn
+      # anyone pinned to them; the versions themselves are still installable.
+      # Non-fatal: trusted publishing may not authorise deprecation.
+      - continue-on-error: true
+        run: npm deprecate '@skyvence/coolify-oc@>=0.2.0 <0.2.9' "Broken TUI packaging: the sidebar never updates. Upgrade to 0.2.9 or newer."
+
   # Runs only once the package is on npm, so a GitHub release never advertises
   # a version that failed to publish. `--generate-notes` builds the body from
   # the commits since the previous release.
