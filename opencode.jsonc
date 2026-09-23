@@ -1,22 +1,7 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  //
-  // This repository is the plugin's own checkout, so OpenCode here runs the
-  // working tree in `.opencode/plugins/coolify-local/` instead of the published
-  // package. Everywhere else, the global configuration loads
-  // @skyvence/coolify-oc (see ~/.config/opencode/opencode.jsonc).
-  //
-  // The two `-` entries turn off the globally loaded package by plugin id. The
-  // working-tree copy registers under `opencode.coolify.local` (see
-  // `.opencode/plugins/coolify-local/index.ts`) so disabling the package does
-  // not disable it too. OpenCode applies plugin lists from lowest to highest
-  // precedence, so this overrides the global install for this project only.
-  //
-  // Configuring it:
-  //   - endpoint: `/coolify instance` in the TUI, or COOLIFY_ENDPOINT in the env
-  //   - token:    `/coolify token`  in the TUI
-  // The working-tree copy is loaded by discovery, so it takes no options block;
-  // `refreshSeconds` and `recursiveProjects` fall back to their defaults here.
-  //
-  "plugins": ["-opencode.coolify", "-opencode.coolify.tui"]
+  // The dev plugin is installed globally from this working tree. There is no
+  // project-local plugin override or packaged-plugin disablement anymore.
+  // The standard npm plugin remains documented in the global config as the
+  // rollback option.
 }
