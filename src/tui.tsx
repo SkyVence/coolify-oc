@@ -40,6 +40,17 @@ export const STARTING_MIN_SPIN_MS = 15_000
 const EVENT_DEBOUNCE_MS = 1_500
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+/** The runtime supports location-aware RPC calls, although the plugin SDK type narrows them. */
+interface RpcLocationOptions {
+  readonly location: { readonly directory: string }
+}
+
+type RpcMethod = (input: unknown, options?: RpcLocationOptions) => Promise<unknown>
+
+function callRpc(method: unknown, input: unknown, directory: string | undefined): Promise<unknown> {
+  return (method as RpcMethod)(input, directory ? { location: { directory } } : undefined)
+}
+
 export type LineTone = RuntimeTone | "muted"
 
 /** What the mounted sidebar exposes back to the plugin. */
@@ -111,7 +122,7 @@ export default Plugin.define({
 
     async function currentCapabilities(): Promise<CapabilitiesPayload | undefined> {
       try {
-        return (await rpc.capabilities({})) as CapabilitiesPayload
+        return (await callRpc(rpc.capabilities, {}, sessionDirectory())) as CapabilitiesPayload
       } catch (cause) {
         toast(`Could not read plugin state: ${message(cause)}`, "error")
         return undefined
@@ -126,7 +137,7 @@ export default Plugin.define({
       })
       if (!endpoint?.trim()) return false
       try {
-        const saved = (await rpc.setEndpoint({ endpoint: endpoint.trim() })) as {
+        const saved = (await callRpc(rpc.setEndpoint, { endpoint: endpoint.trim() }, sessionDirectory())) as {
           ok?: boolean
           endpoint?: string
           message?: string
@@ -157,7 +168,7 @@ export default Plugin.define({
         return false
       }
       try {
-        const result = (await rpc.refreshCapabilities({})) as CapabilitiesPayload
+        const result = (await callRpc(rpc.refreshCapabilities, {}, sessionDirectory())) as CapabilitiesPayload
         if (result.connected !== true) {
           toast(result.message ?? "Token stored, but the instance could not be reached.", "warning")
           return false
@@ -299,7 +310,7 @@ export default Plugin.define({
       if (draft === undefined || draft.trim() === "") return
 
       try {
-        const result = (await rpc.writeProjectJson({ directory, content: draft })) as {
+        const result = (await callRpc(rpc.writeProjectJson, { directory, content: draft }, directory)) as {
           ok?: boolean
           file?: string
           message?: string
@@ -393,6 +404,7 @@ export default Plugin.define({
       context.ui.dialog.set({ size: "medium", centered: true })
       context.ui.dialog.show(() => (
         <SetupPopup
+          directory={sessionDirectory()}
           onSetEndpoint={async () => {
             await promptEndpoint()
             openSetupPopup()
@@ -414,7 +426,7 @@ export default Plugin.define({
 
       let resolution: ResolvePayload
       try {
-        resolution = (await rpc.resolve({ directory })) as ResolvePayload
+        resolution = (await callRpc(rpc.resolve, { directory }, directory)) as ResolvePayload
       } catch (cause) {
         toast(`Could not search Coolify: ${message(cause)}`, "error")
         return
@@ -457,12 +469,12 @@ export default Plugin.define({
 
       if (!chosen) return
       try {
-        const result = (await rpc.configureProject({
+        const result = (await callRpc(rpc.configureProject, {
           directory,
           ...(resolution.config?.projectUUID ? { projectUUID: resolution.config.projectUUID } : {}),
           ...(resolution.config?.environmentName ? { environmentName: resolution.config.environmentName } : {}),
           applications: { [slug(chosen.name) || "default"]: { applicationUUID: chosen.applicationUUID, name: chosen.name } },
-        })) as { ok?: boolean; file?: string; message?: string }
+        }, directory)) as { ok?: boolean; file?: string; message?: string }
         if (result.ok === true) toast(`Linked ${chosen.name} in ${result.file}.`, "success")
         else toast(result.message ?? "Could not link this project.", "error")
       } catch (cause) {
@@ -547,7 +559,7 @@ export default Plugin.define({
         if (cached) {
           apps = allAppsCache!.apps
         } else {
-          const data = (await rpc.applications({ scope: "project", directory })) as ApplicationsPayload
+          const data = (await callRpc(rpc.applications, { scope: "project", directory }, directory)) as ApplicationsPayload
           apps = data.apps ?? []
           allAppsCache = { at: Date.now(), directory, apps }
         }
@@ -702,10 +714,10 @@ function CoolifySidebar(props: {
         // location and a freshly mapped project shows nothing.
         const base = directory()
         setNoDirectory(base === undefined)
-        const payload = (await rpc.applications({
+        const payload = (await callRpc(rpc.applications, {
           scope: "mapped",
           ...(base === undefined ? {} : { directory: base }),
-        })) as ApplicationsPayload
+        }, base)) as ApplicationsPayload
         const nextRows = payload.apps ?? []
         cadence = payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
         const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, Date.now(), STARTING_TIMEOUT_MS)
@@ -959,6 +971,7 @@ function ProjectJsonPopup(props: {
  * whether the token works, and one button per setting.
  */
 function SetupPopup(props: {
+  directory?: string
   onSetEndpoint: () => Promise<void>
   onSetToken: () => Promise<void>
 }) {
@@ -979,7 +992,7 @@ function SetupPopup(props: {
     if (refreshing()) return
     setRefreshing(true)
     try {
-      setData((await rpc.refreshCapabilities({})) as CapabilitiesPayload)
+      setData((await callRpc(rpc.refreshCapabilities, {}, props.directory)) as CapabilitiesPayload)
       context.ui.toast.show({ message: "Access re-checked.", variant: "success" })
     } catch (cause) {
       context.ui.toast.show({ message: `Could not re-check access: ${message(cause)}`, variant: "error" })
@@ -1004,7 +1017,7 @@ function SetupPopup(props: {
 
   const load = async () => {
     try {
-      setData((await rpc.capabilities({})) as CapabilitiesPayload)
+      setData((await callRpc(rpc.capabilities, {}, props.directory)) as CapabilitiesPayload)
     } catch {
       setData(undefined)
     }
