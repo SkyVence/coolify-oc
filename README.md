@@ -7,28 +7,21 @@ the model can use to inspect, deploy and configure your applications.
 ## Install
 
 ```sh
-cd ~/.config/opencode && bun add @skyvence/coolify-oc
-
-mkdir -p plugins/coolify-oc
-printf 'export { default } from "@skyvence/coolify-oc"\n'     > plugins/coolify-oc/index.ts
-printf 'export { default } from "@skyvence/coolify-oc/tui"\n' > plugins/coolify-oc/tui.ts
-cat > plugins/coolify-oc/package.json <<'EOF'
-{ "name": "coolify-oc-discovery", "type": "module", "exports": { ".": "./index.ts", "./tui": "./tui.ts" } }
-EOF
+opencode plugin add @skyvence/coolify-oc
 ```
 
-> The shim's `name` must **not** be `@skyvence/coolify-oc`. A package that
-> imports a specifier matching its own name resolves to *itself*, so the shim
-> would import the shim. Any other name works; this one is only a label.
+That installs the package and adds it to your global `opencode.json(c)`. The
+sidebar half loads automatically through the package's `./tui` entry, so it does
+not also go in `cli.json`.
 
-Restart the TUI, run `/coolify`, choose **Set up instance**, and enter your
-Coolify URL and API token.
+Restart the TUI (`opencode service restart`), run `/coolify`, choose
+**Set up instance**, and enter your Coolify URL and API token.
 
 <details>
 <summary>Per project instead</summary>
 
-OpenCode 2.0.10 does not load plugins listed only in the global
-`opencode.jsonc`. A project-local entry does work:
+Install into one project rather than globally by adding a `plugins` entry to
+that project's `opencode.jsonc`:
 
 ```jsonc
 {
@@ -37,6 +30,9 @@ OpenCode 2.0.10 does not load plugins listed only in the global
   ]
 }
 ```
+
+Use one or the other, not both. A global and a project entry share the same
+plugin id, and OpenCode loads both, so the plugin would run twice.
 
 </details>
 
@@ -109,6 +105,11 @@ The words this plugin uses, and where each one lives: [NAMING.md](NAMING.md).
 
 The API token is stored by OpenCode as a credential, never in configuration.
 `COOLIFY_ENDPOINT` is used when no `endpoint` option is set.
+
+Options are set through the object form of a `plugins` entry. `opencode plugin
+add` records a bare package name and sets none, so with that install use
+`/coolify instance` or `COOLIFY_ENDPOINT` for the endpoint and take the defaults
+for the rest.
 
 ## `coolify.json`
 
@@ -198,6 +199,11 @@ bun install
 bun run check   # tsc --noEmit + vitest
 bun run test
 ```
+
+Opening OpenCode in this repository runs the working tree, not the published
+package. `.opencode/plugins/coolify-local/` re-exports `src/` under the ids
+`opencode.coolify.local` and `opencode.coolify.local.tui`, and `opencode.jsonc`
+turns off the global package for this project. Edits under `src/` hot-reload.
 
 ## Limitations
 

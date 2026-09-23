@@ -1,4 +1,4 @@
-# Publishes to npm when a version tag is pushed.
+# Publishes to npm and creates a GitHub release when a version tag is pushed.
 #
 # Auth is npm trusted publishing: the job exchanges its OIDC token for a
 # short-lived credential, so there is no NPM_TOKEN secret to create or rotate.
@@ -41,3 +41,18 @@ jobs:
       # No NODE_AUTH_TOKEN here on purpose: setting one would make npm use the
       # token instead of the OIDC exchange.
       - run: npm publish --access public --provenance
+
+  # Runs only once the package is on npm, so a GitHub release never advertises
+  # a version that failed to publish. `--generate-notes` builds the body from
+  # the commits since the previous release.
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes

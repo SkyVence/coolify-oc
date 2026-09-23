@@ -1,25 +1,22 @@
 {
-  "$schema": "https://opencode.ai/config.json"
-  // This plugin is installed globally, so it does not need a project entry here.
+  "$schema": "https://opencode.ai/config.json",
   //
-  // Global install (recommended): the discovery layout in
-  //   ~/.config/opencode/plugins/opencode-coolify/{index.ts,tui.ts,package.json}
-  // makes both halves available in every project.
+  // This repository is the plugin's own checkout, so OpenCode here runs the
+  // working tree in `.opencode/plugins/coolify-local/` instead of the published
+  // package. Everywhere else, the global configuration loads
+  // @skyvence/coolify-oc (see ~/.config/opencode/opencode.jsonc).
+  //
+  // The two `-` entries turn off the globally loaded package by plugin id. The
+  // working-tree copy registers under `opencode.coolify.local` (see
+  // `.opencode/plugins/coolify-local/index.ts`) so disabling the package does
+  // not disable it too. OpenCode applies plugin lists from lowest to highest
+  // precedence, so this overrides the global install for this project only.
   //
   // Configuring it:
-  //   - endpoint: /coolify-endpoint in the TUI, or COOLIFY_ENDPOINT in the env
-  //   - token:    /coolify-connect  in the TUI
-  //   - refreshSeconds: idle sidebar poll cadence in seconds (5-600, default 25),
-  //     only settable through the per-project options block below.
+  //   - endpoint: `/coolify instance` in the TUI, or COOLIFY_ENDPOINT in the env
+  //   - token:    `/coolify token`  in the TUI
+  // The working-tree copy is loaded by discovery, so it takes no options block;
+  // `refreshSeconds` and `recursiveProjects` fall back to their defaults here.
   //
-  // Per-project alternative: uncomment the block below and drop the global
-  // install. Note that in OpenCode 2.0.10 a plugin listed only in the global
-  // opencode.jsonc is NOT loaded, which is why the discovery layout is used.
-  //
-  // "plugins": [
-  //   {
-  //     "package": ".",
-  //     "options": { "endpoint": "https://coolify.example.com" }
-  //   }
-  // ]
+  "plugins": ["-opencode.coolify", "-opencode.coolify.tui"]
 }
