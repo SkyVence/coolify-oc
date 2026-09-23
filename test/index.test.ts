@@ -452,6 +452,24 @@ describe("credential visibility", () => {
     expect(after.connected).toBe(true)
     await h.cleanup()
   })
+
+  it("reports the recovered token through capabilities, not only applications", async () => {
+    const h = await harness({ token: undefined, options: {} })
+
+    const before = await h.handlers.capabilities({})
+    expect(before.connected).toBe(false)
+
+    const connection = (h.context.integration as any).connection
+    connection.active = async () => ({ type: "credential", id: "cred_1", label: "Coolify", method: "key" })
+    connection.resolve = async () => ({ type: "key", key: TOKEN })
+
+    // The TUI's setup popup and configuration gate use this RPC directly. It
+    // must observe the same recovery as the sidebar's applications call.
+    const after = await h.handlers.capabilities({})
+    expect(after.connected).toBe(true)
+    expect(after.endpointConfigured).toBe(true)
+    await h.cleanup()
+  })
 })
 
 describe("endpoint sync", () => {
@@ -469,6 +487,20 @@ describe("endpoint sync", () => {
     await h.store.set("settings", { endpoint: ENDPOINT })
 
     const after = await h.handlers.applications({ scope: "mapped", directory: h.directory })
+    expect(after.endpointConfigured).toBe(true)
+    expect(after.connected).toBe(true)
+    await h.cleanup()
+  })
+
+  it("picks up an endpoint written after setup through capabilities", async () => {
+    const h = await harness({ token: TOKEN, options: { endpoint: "" } })
+
+    const before = await h.handlers.capabilities({})
+    expect(before.endpointConfigured).toBe(false)
+
+    await h.store.set("settings", { endpoint: ENDPOINT })
+
+    const after = await h.handlers.capabilities({})
     expect(after.endpointConfigured).toBe(true)
     expect(after.connected).toBe(true)
     await h.cleanup()

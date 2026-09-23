@@ -178,7 +178,13 @@ export default Plugin.define({
 
     // --- RPC ----------------------------------------------------------------
     const rpc = await ctx.rpc.register(CoolifyRpc, {
-      capabilities: async () => capabilitiesPayload(),
+      capabilities: async () => {
+        // The TUI reads this method directly for its setup popup and gating.
+        // Reconcile the endpoint and credential first so those views cannot
+        // lag behind the applications path or a server-side tool call.
+        await refresh("capabilities")
+        return capabilitiesPayload()
+      },
 
       refreshCapabilities: async () => {
         await refresh("rpc", true)
