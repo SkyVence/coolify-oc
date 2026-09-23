@@ -431,6 +431,29 @@ describe("configureProject", () => {
   })
 })
 
+describe("credential visibility", () => {
+  it("recovers when the token becomes resolvable after setup", async () => {
+    // The credential is not visible to `connection.active` during setup. That is
+    // how a running instance ended up asserting "No Coolify API token is
+    // connected" while the token sat in the database: `credentialPresent` is
+    // computed during setup and the payload never retried.
+    const h = await harness({ token: undefined, options: {} })
+
+    const before = await h.handlers.capabilities({})
+    expect(before.connected).toBe(false)
+    expect(before.message).toContain("API token")
+
+    // The connection becomes resolvable, as it is on every fresh instance.
+    const connection = (h.context.integration as any).connection
+    connection.active = async () => ({ type: "credential", id: "cred_1", label: "Coolify", method: "key" })
+    connection.resolve = async () => ({ type: "key", key: TOKEN })
+
+    const after = await h.handlers.applications({ scope: "mapped", directory: h.directory })
+    expect(after.connected).toBe(true)
+    await h.cleanup()
+  })
+})
+
 describe("endpoint sync", () => {
   it("picks up an endpoint written after setup, instead of staying unconfigured", async () => {
     // An empty option falls through to storage, which is how a long-running
