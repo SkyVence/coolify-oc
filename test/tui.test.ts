@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   STARTING_MIN_SPIN_MS,
   STARTING_TIMEOUT_MS,
+  abbreviatePath,
   abilityEntries,
   accessLevel,
   applicationGroups,
@@ -620,6 +621,36 @@ describe("application rows", () => {
     const row = app({ runtime: { state: "running", health: "unhealthy", label: "running (unhealthy)", raw: "running:unhealthy" } })
     expect(appRowState(row)).toBe("running !")
     expect(appRowTone(row)).toBe("warn")
+  })
+})
+
+describe("abbreviatePath", () => {
+  const home = "/home/me"
+
+  it("abbreviates parents under home and keeps the last segment", () => {
+    expect(abbreviatePath("/home/me/programming/client/inventory.app", home)).toBe("~/p/c/inventory.app")
+  })
+
+  it("collapses home itself", () => {
+    expect(abbreviatePath("/home/me", home)).toBe("~")
+    expect(abbreviatePath("/home/me/", home)).toBe("~")
+  })
+
+  it("abbreviates an absolute path outside home", () => {
+    expect(abbreviatePath("/tmp/opencode/project", home)).toBe("/t/o/project")
+  })
+
+  it("keeps single-character parents as-is", () => {
+    expect(abbreviatePath("/home/me/a/b/c", home)).toBe("~/a/b/c")
+  })
+
+  it("returns a root marker for empty and root input", () => {
+    expect(abbreviatePath("", home)).toBe("/")
+    expect(abbreviatePath("/", home)).toBe("/")
+  })
+
+  it("handles relative paths", () => {
+    expect(abbreviatePath("apps/web/admin", home)).toBe("a/w/admin")
   })
 })
 

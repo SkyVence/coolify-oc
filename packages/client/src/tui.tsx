@@ -840,8 +840,17 @@ function CoolifySidebar(props: {
       <text fg={failed() ? theme().feedback.error.base : theme().muted} wrapMode="word">
         {failed() ? "unreachable" : (data()?.capabilities?.team?.name ?? instanceHint(data()))}
       </text>
-      <text fg={noDirectory() ? theme().feedback.warning.base : theme().muted} wrapMode="char">
-        {noDirectory() ? "no project directory" : (directory() ?? "project unknown")}
+      <text
+        fg={noDirectory() ? theme().feedback.warning.base : theme().muted}
+        wrapMode="none"
+        onMouseUp={() =>
+          context.ui.toast.show({
+            message: noDirectory() ? "No project directory for this session." : `Project: ${directory()}`,
+            variant: "info",
+          })
+        }
+      >
+        {noDirectory() ? "no project directory" : abbreviatePath(directory() ?? "project unknown")}
       </text>
 
       {/* Applications: status light, name, state. One section per config. */}
@@ -1489,6 +1498,35 @@ function toneColour(
   if (tone === "warn") return theme.feedback.warning.base
   if (tone === "bad") return theme.feedback.error.base
   return theme.muted
+}
+
+/**
+ * A one-line project label: `~` for home and one letter per parent folder.
+ *
+ * `/home/me/programming/client/inventory.app` becomes `~/p/c/inventory.app`.
+ * The final segment is kept whole so the project is still recognisable, and
+ * nothing is elided — the full path is shown on click instead.
+ */
+export function abbreviatePath(value: string, home: string | undefined = process.env.HOME): string {
+  const trimmed = value.replace(/\/+$/, "")
+  if (trimmed === "") return "/"
+
+  let prefix = ""
+  let rest = trimmed
+  if (home && home !== "/" && (trimmed === home || trimmed.startsWith(`${home}/`))) {
+    prefix = "~"
+    rest = trimmed.slice(home.length)
+  }
+  const absolute = rest.startsWith("/")
+  const segments = rest.split("/").filter((segment) => segment !== "")
+  if (segments.length === 0) return prefix === "~" ? "~" : "/"
+
+  const shortened = segments.map((segment, index) =>
+    index === segments.length - 1 || segment.length <= 1 ? segment : segment.slice(0, 1),
+  )
+  const joined = shortened.join("/")
+  if (prefix === "~") return `~/${joined}`
+  return absolute ? `/${joined}` : joined
 }
 
 /** The last path segment, for a compact project label. */
