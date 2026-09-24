@@ -1,6 +1,6 @@
 {
   "name": "@skyvence/coolify-oc",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "description": "Deploy and configure projects on a self-hosted Coolify instance from OpenCode, with a TUI panel and model-facing tools.",
   "license": "MIT",
   "type": "module",
@@ -24,11 +24,15 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./tui": "./dist/tui.js",
     "./package.json": "./package.json"
+  },
+  "bin": {
+    "coolify-install-tui": "./scripts/install-tui.mjs"
   },
   "files": [
     "dist",
+    "src",
+    "scripts",
     "README.md",
     "NAMING.md",
     "LICENSE"
