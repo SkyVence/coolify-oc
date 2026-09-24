@@ -3,5 +3,12 @@ dist/
 *.log
 .DS_Store
 
+# Staged into packages/server by its build for the TUI installer.
+packages/server/client/
+packages/server/shared/
+packages/server/README.md
+packages/server/NAMING.md
+packages/server/LICENSE
+
 # Private release runbook: contains local paths and account notes.
 RELEASING.md

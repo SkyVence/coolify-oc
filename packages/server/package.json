@@ -1,0 +1,52 @@
+{
+  "name": "@skyvence/coolify-oc",
+  "version": "0.3.0",
+  "description": "Deploy and configure projects on a self-hosted Coolify instance from OpenCode: model-facing tools plus a separately installed sidebar.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "coolify",
+    "deploy",
+    "paas"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SkyVence/coolify-oc.git"
+  },
+  "homepage": "https://github.com/SkyVence/coolify-oc#readme",
+  "bugs": {
+    "url": "https://github.com/SkyVence/coolify-oc/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "coolify-install-tui": "./scripts/install-tui.mjs"
+  },
+  "files": [
+    "dist",
+    "client",
+    "shared",
+    "scripts",
+    "README.md",
+    "NAMING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run ./scripts/build.mjs",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.13",
+    "@opencode/schema": "2.0.13"
+  },
+  "devDependencies": {
+    "@skyvence/coolify-oc-shared": "*"
+  }
+}

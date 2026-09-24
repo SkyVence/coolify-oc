@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
-import { CoolifyClient } from "../src/coolify/client"
-import { buildTools, type ToolDeps } from "../src/tools"
-import { parseDotEnv } from "../src/tools/application"
+import { CoolifyClient } from "../packages/server/src/coolify/client"
+import { buildTools, type ToolDeps } from "../packages/server/src/tools"
+import { parseDotEnv } from "../packages/server/src/tools/application"
 import { makeFetch, memoryStore, report, type FakeRoute } from "./helpers"
 
 const context = { signal: new AbortController().signal, progress: async () => {} } as unknown as ToolContext

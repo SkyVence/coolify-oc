@@ -3,10 +3,10 @@ import type { Integration } from "@opencode/plugin"
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import type { KeymapLayer } from "@opencode/plugin/tui/context"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { normalizeDeploymentStatus } from "./coolify/deploy"
-import { runtimeTone, type RuntimeTone } from "./coolify/runtime"
-import { DEFAULT_REFRESH_SECONDS } from "./options"
-import { DEPLOY_SKILL, LINK_SKILL, type CoolifySkill } from "./skills"
+import { normalizeDeploymentStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
+import { runtimeTone, type RuntimeTone } from "@skyvence/coolify-oc-shared/coolify/runtime"
+import { DEFAULT_REFRESH_SECONDS } from "@skyvence/coolify-oc-shared/options"
+import { DEPLOY_SKILL, LINK_SKILL, type CoolifySkill } from "@skyvence/coolify-oc-shared/skills"
 import {
   Coolify as CoolifyRpc,
   type ApplicationsPayload,
@@ -15,7 +15,7 @@ import {
   type CapabilitiesPayload,
   type CandidatePayload,
   type ResolvePayload,
-} from "./rpc"
+} from "@skyvence/coolify-oc-shared/rpc"
 
 const INTEGRATION_ID = "coolify" as Integration.ID
 /**

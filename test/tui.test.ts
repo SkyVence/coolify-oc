@@ -17,7 +17,7 @@ import {
   refreshSeconds,
   shouldShowConfigure,
   statusLight,
-} from "../src/tui"
+} from "../packages/client/src/tui"
 
 /**
  * These tests import the real TUI entry and drive `setup` with a mock context.
@@ -189,7 +189,7 @@ function mockContext() {
 }
 
 async function loadPlugin() {
-  return (await import("../src/tui")).default
+  return (await import("../packages/client/src/tui")).default
 }
 
 const find = (harness: ReturnType<typeof mockContext>, id: string) =>

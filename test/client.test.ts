@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { CoolifyClient, normalizeEndpoint } from "../src/coolify/client"
-import { CoolifyError } from "../src/coolify/types"
+import { CoolifyClient, normalizeEndpoint } from "../packages/server/src/coolify/client"
+import { CoolifyError } from "../packages/server/src/coolify/types"
 import { makeFetch } from "./helpers"
 
 describe("normalizeEndpoint", () => {

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { isAbsolute, resolve as resolvePath } from "node:path"
-import { listApplicationDeployments, normalizeDeploymentStatus } from "../coolify/deploy"
+import { listApplicationDeployments } from "../coolify/deploy"
 import {
   createEnv,
   deleteEnv,
@@ -11,7 +11,7 @@ import {
   updateApplication,
   updateEnv,
 } from "../coolify/resources"
-import { parseApplicationStatus } from "../coolify/runtime"
+import { normalizeDeploymentStatus, parseApplicationStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import type { CoolifyDeployment, CoolifyEnvVariable } from "../coolify/types"
 import { APPLICATION_SETTING_FIELDS, SETTING_FIELD_SET } from "./settings-fields"
 import {

@@ -1,5 +1,5 @@
 import type { CoolifyClient } from "./client"
-import { parseApplicationStatus, type RuntimeStatus } from "./runtime"
+import { parseApplicationStatus, type RuntimeStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 
 /**
  * Coolify database resources.

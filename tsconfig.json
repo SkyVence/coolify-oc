@@ -16,7 +16,11 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@skyvence/coolify-oc-shared/*": ["packages/shared/src/*"]
+    }
   },
-  "include": ["src", "test"]
+  "include": ["packages", "test"]
 }

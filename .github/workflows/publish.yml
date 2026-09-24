@@ -1,4 +1,9 @@
-# Publishes to npm and creates a GitHub release when a version tag is pushed.
+# Publishes the server package to npm and creates a GitHub release when a
+# version tag is pushed.
+#
+# The npm package is the server half only. The TUI half is installed locally
+# (outside node_modules) by the package's `coolify-install-tui` command, because
+# an npm-packaged TUI plugin cannot repaint in current OpenCode (issue #33884).
 #
 # Auth is npm trusted publishing: the job exchanges its OIDC token for a
 # short-lived credential, so there is no NPM_TOKEN secret to create or rotate.
@@ -41,15 +46,16 @@ jobs:
       # No NODE_AUTH_TOKEN here on purpose: setting one would make npm use the
       # token instead of the OIDC exchange.
       - run: npm publish --access public --provenance
+        working-directory: packages/server
 
-      # 0.2.0-0.2.8 were published from raw TypeScript sources, which gives the
-      # TUI plugin its own Solid runtime and freezes sidebar updates. Warn
+      # 0.2.x shipped the TUI half in the package, which never repainted. Warn
       # anyone pinned to them; the versions themselves are still installable.
       # Non-fatal: trusted publishing may not authorise deprecation.
       - continue-on-error: true
+        working-directory: packages/server
         run: >-
-          npm deprecate '@skyvence/coolify-oc@>=0.2.0 <0.2.9'
-          'Broken TUI packaging - the sidebar never updates. Upgrade to 0.2.9 or newer.'
+          npm deprecate '@skyvence/coolify-oc@>=0.2.0 <0.3.0'
+          'Broken TUI packaging - the sidebar never repaints. Upgrade to 0.3.0 or newer.'
 
   # Runs only once the package is on npm, so a GitHub release never advertises
   # a version that failed to publish. `--generate-notes` builds the body from

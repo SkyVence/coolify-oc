@@ -13,7 +13,7 @@ import {
   validateProjectJson,
   selectApplication,
   updateProjectConfig,
-} from "../src/project-config"
+} from "../packages/server/src/project-config"
 
 async function tempRepo(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "coolify-repo-"))

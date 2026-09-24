@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseApplicationStatus, runtimeTone } from "../src/coolify/runtime"
+import { parseApplicationStatus, runtimeTone } from "../packages/shared/src/coolify/runtime"
 
 describe("parseApplicationStatus", () => {
   it("splits state and health", () => {

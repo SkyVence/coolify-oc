@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { databaseRuntime, isDatabaseType, normalizeDatabaseList } from "../src/coolify/databases"
+import { databaseRuntime, isDatabaseType, normalizeDatabaseList } from "../packages/server/src/coolify/databases"
 
 describe("isDatabaseType", () => {
   it("accepts the supported engines and rejects others", () => {

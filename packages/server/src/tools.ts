@@ -16,7 +16,6 @@ import {
   getDeployment,
   listApplicationDeployments,
   listDeployments,
-  normalizeDeploymentStatus,
   triggerDeploy,
   waitForDeployment,
 } from "./coolify/deploy"
@@ -40,7 +39,7 @@ import {
   type CoolifyApplication,
   type CoolifyDeployment,
 } from "./coolify/types"
-import { parseApplicationStatus } from "./coolify/runtime"
+import { normalizeDeploymentStatus, parseApplicationStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import { linkCandidate, resolveProject, type Resolution } from "./resolve"
 import { findProjectConfig, updateProjectConfig, type ProjectConfigUpdate } from "./project-config"
 import { readLink, type ResolvedLink, type StorageLike } from "./store"

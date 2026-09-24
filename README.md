@@ -209,22 +209,27 @@ Coolify without entering the conversation.
 
 ## Development
 
+A Bun workspace with three packages:
+
+| Package | What it is |
+| --- | --- |
+| `packages/shared` | The RPC contract and the pieces both halves use: `rpc`, `options`, `skills`, `coolify/runtime`. Bundled into the server build. |
+| `packages/server` | `@skyvence/coolify-oc` — the published plugin: tools, RPC handlers, skills. Bundles `shared`; leaves `@opencode/*` external. |
+| `packages/client` | `@skyvence/coolify-oc-tui` — the sidebar. Source-only; installed locally by `packages/server/scripts/install-tui.mjs`. |
+
 ```sh
 bun install
-bun run check   # tsc --noEmit + vitest
+bun run check   # tsc --noEmit + vitest (210 tests)
 bun run test
-bun run build   # bundles src/ to dist/ (external: solid-js, @opentui/*, @opencode/*)
+bun run build   # builds packages/server/dist and stages client/ + shared/ for the installer
 ```
 
-The published package ships `dist/` — bundled ESM with `solid-js`,
-`@opentui/*` and `@opencode/*` left external, the way OpenCode's own TUI
-plugins are distributed. Shipping raw `src/` instead gives the plugin a second
-Solid runtime, which silently freezes sidebar updates.
-
-The working-tree dev plugin is loaded globally from
-`~/.config/opencode/plugins/coolify-local/`, which re-exports `src/` under the
-ids `opencode.coolify.local` and `opencode.coolify.local.tui`. Edits under
-`src/` hot-reload.
+The client is shipped as **source**, not a bundle: OpenCode transpiles local
+plugins with its OpenTUI/Solid transform, which is skipped for files inside
+`node_modules`. `install-tui.mjs` copies `client/` and `shared/` into
+`~/.config/opencode/plugins/coolify-client/`, rewrites the shared import to a
+relative path, and gives the local plugin the id `opencode.coolify.local.tui`
+so it is not disabled by the packaged TUI's `-opencode.coolify.tui` entry.
 
 ## Limitations
 

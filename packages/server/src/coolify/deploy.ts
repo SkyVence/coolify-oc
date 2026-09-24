@@ -1,41 +1,6 @@
 import type { CoolifyClient } from "./client"
 import type { CoolifyDeployment } from "./types"
-
-export type DeploymentStatus = "queued" | "in_progress" | "finished" | "failed" | "cancelled" | "unknown"
-
-/**
- * Coolify's deployment queue uses a free-form `status` string. Map the values
- * it emits, and the obvious spelling variants, onto a small closed set.
- */
-export function normalizeDeploymentStatus(raw: string | undefined): DeploymentStatus {
-  switch ((raw ?? "").toLowerCase()) {
-    case "queued":
-    case "pending":
-    case "scheduled":
-    case "waiting":
-      return "queued"
-    case "in_progress":
-    case "running":
-    case "building":
-    case "deploying":
-    case "starting":
-      return "in_progress"
-    case "finished":
-    case "success":
-    case "succeeded":
-    case "completed":
-      return "finished"
-    case "failed":
-    case "error":
-      return "failed"
-    case "cancelled":
-    case "canceled":
-    case "cancelled-by-user":
-      return "cancelled"
-    default:
-      return "unknown"
-  }
-}
+import { normalizeDeploymentStatus, type DeploymentStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 
 export function isTerminal(status: DeploymentStatus): boolean {
   return status === "finished" || status === "failed" || status === "cancelled"

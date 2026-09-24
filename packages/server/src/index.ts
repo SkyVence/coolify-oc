@@ -26,8 +26,8 @@ import {
   type CapabilityReport,
   type CoolifyDeployment,
 } from "./coolify/types"
-import { parseApplicationStatus } from "./coolify/runtime"
-import { parseRecursiveProjects, parseRefreshSeconds } from "./options"
+import { parseApplicationStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
+import { parseRecursiveProjects, parseRefreshSeconds } from "@skyvence/coolify-oc-shared/options"
 import {
   findAllProjectConfigs,
   findProjectConfig,
@@ -46,9 +46,9 @@ import {
   type ApplicationsProjectPayload,
   type AppStatusPayload,
   type CapabilitiesPayload,
-} from "./rpc"
+} from "@skyvence/coolify-oc-shared/rpc"
 import { resolveProject } from "./resolve"
-import { COOLIFY_SKILLS, skillPath } from "./skills"
+import { COOLIFY_SKILLS, skillPath } from "@skyvence/coolify-oc-shared/skills"
 import {
   clearLink,
   readCapabilities,

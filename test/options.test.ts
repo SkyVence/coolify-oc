@@ -5,7 +5,7 @@ import {
   MIN_REFRESH_SECONDS,
   parseRecursiveProjects,
   parseRefreshSeconds,
-} from "../src/options"
+} from "../packages/shared/src/options"
 
 describe("parseRefreshSeconds", () => {
   it("defaults to 25 seconds", () => {

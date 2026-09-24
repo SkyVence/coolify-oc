@@ -2,10 +2,10 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { normalizeEndpoint } from "../src/coolify/client"
-import type { CapabilityReport } from "../src/coolify/types"
-import { Coolify as CoolifyRpc } from "../src/rpc"
-import { capabilityKey } from "../src/store"
+import { normalizeEndpoint } from "../packages/server/src/coolify/client"
+import type { CapabilityReport } from "../packages/server/src/coolify/types"
+import { Coolify as CoolifyRpc } from "../packages/shared/src/rpc"
+import { capabilityKey } from "../packages/server/src/store"
 import { makeFetch, memoryStore, report, type FakeRoute } from "./helpers"
 
 const ENDPOINT = "https://coolify.test"
@@ -131,7 +131,7 @@ async function harness(input: HarnessOptions = {}) {
     },
   }
 
-  const plugin = (await import("../src/index")).default
+  const plugin = (await import("../packages/server/src/index")).default
   const cleanup = await plugin.setup(context)
 
   return {

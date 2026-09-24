@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { PROBE_UUID, probeCapabilities } from "../src/coolify/capabilities"
-import { CoolifyClient } from "../src/coolify/client"
+import { PROBE_UUID, probeCapabilities } from "../packages/server/src/coolify/capabilities"
+import { CoolifyClient } from "../packages/server/src/coolify/client"
 import { makeFetch, type FakeRoute } from "./helpers"
 
 function clientFor(routes: readonly FakeRoute[]) {

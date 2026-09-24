@@ -1,0 +1,15 @@
+{
+  "name": "@skyvence/coolify-oc-shared",
+  "version": "0.2.15",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@opencode/plugin": "2.0.13"
+  },
+  "exports": {
+    "./rpc": "./src/rpc.ts",
+    "./options": "./src/options.ts",
+    "./skills": "./src/skills.ts",
+    "./coolify/runtime": "./src/coolify/runtime.ts"
+  }
+}

@@ -3,8 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
-import { CoolifyClient } from "../src/coolify/client"
-import { buildTools, type ToolDeps } from "../src/tools"
+import { CoolifyClient } from "../packages/server/src/coolify/client"
+import { buildTools, type ToolDeps } from "../packages/server/src/tools"
 import { makeFetch, memoryStore, report } from "./helpers"
 
 const context = {

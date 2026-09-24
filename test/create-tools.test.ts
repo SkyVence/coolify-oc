@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { applicationKey, inspectPackage } from "../src/tools/create"
-import { parseProjectConfig } from "../src/project-config"
+import { applicationKey, inspectPackage } from "../packages/server/src/tools/create"
+import { parseProjectConfig } from "../packages/server/src/project-config"
 
 async function packageDir(files: Record<string, string>): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "coolify-inspect-"))

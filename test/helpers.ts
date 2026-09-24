@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { CapabilityReport } from "../src/coolify/types"
+import type { CapabilityReport } from "../packages/server/src/coolify/types"
 
 export interface FakeRoute {
   readonly method: string
