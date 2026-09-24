@@ -612,6 +612,34 @@ export default Plugin.define({
       let queuePromise: Promise<readonly CoolifyDeployment[]> | undefined
       const queueOnce = () => (queuePromise ??= listDeployments(client!, undefined).catch(() => []))
 
+      /**
+       * Which Coolify environment each application belongs to.
+       *
+       * `GET /applications/:uuid` does not report the environment, so it is
+       * read from the project's environments instead. Empty when the project
+       * is unknown or the calls fail, in which case rows simply stay ungrouped.
+       */
+      let environmentByApplication: ReadonlyMap<string, string> | undefined
+      const mapEnvironments = async (projectUUID: string): Promise<Map<string, string>> => {
+        const map = new Map<string, string>()
+        const environments = await listEnvironments(client!, projectUUID).catch(() => [])
+        for (const environment of environments) {
+          const name = environment.name ?? environment.uuid
+          if (!name) continue
+          const detail = await client!
+            .request<{ applications?: readonly { uuid?: string }[] }>({
+              method: "GET",
+              path: `/projects/${projectUUID}/${environment.uuid ?? environment.name}`,
+              requires: "read",
+            })
+            .catch(() => undefined)
+          for (const application of detail?.applications ?? []) {
+            if (application.uuid && !map.has(application.uuid)) map.set(application.uuid, name)
+          }
+        }
+        return map
+      }
+
       const describe = async (
         into: AppStatusPayload[],
         key: string,
@@ -623,13 +651,14 @@ export default Plugin.define({
         const latest = await latestDeploymentFor(client!, applicationUUID, undefined, queueOnce).catch(
           () => undefined,
         )
+        const environment = environmentByApplication?.get(applicationUUID) ?? application?.environment_name
         into.push({
           key,
           applicationUUID,
           name: application?.name ?? key,
           ...(path ? { path } : {}),
           ...(application?.fqdn ? { domains: application.fqdn } : {}),
-          ...(application?.environment_name ? { environment: application.environment_name } : {}),
+          ...(environment ? { environment } : {}),
           runtime: parseApplicationStatus(application?.status),
           ...(latest
             ? {
@@ -668,6 +697,7 @@ export default Plugin.define({
       }
 
       const projectUUID = config?.projectUUID ?? link?.projectUUID
+      if (projectUUID) environmentByApplication = await mapEnvironments(projectUUID)
       let projects: ApplicationsProjectPayload[] | undefined
       let configFile = config?.file
       if (mode === "project" && projectUUID) {

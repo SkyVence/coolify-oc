@@ -828,32 +828,21 @@ function CoolifySidebar(props: {
             {SPINNER[frame() % SPINNER.length]}
           </text>
         </Show>
-        <text
-          fg={failed() ? theme().feedback.error.base : theme().muted}
-          wrapMode="none"
-          truncate
-          flexShrink={1}
-          minWidth={0}
-        >
-          {failed() ? "unreachable" : (data()?.capabilities?.team?.name ?? instanceHint(data()))}
-        </text>
-        <text fg={theme().muted} wrapMode="none" flexShrink={0}>
-          ·
-        </text>
-        <text
-          fg={noDirectory() ? theme().feedback.warning.base : theme().muted}
-          wrapMode="none"
-          truncate
-          flexShrink={1}
-          minWidth={0}
-        >
-          {noDirectory() ? "no project directory" : basename(directory() ?? "")}
-        </text>
         <box flexGrow={1} />
         <text fg={theme().muted} wrapMode="none" flexShrink={0}>
           {remaining()}s
         </text>
       </box>
+
+      {/* The instance and the project each get their own full-width line, so
+          neither is cut off with an ellipsis. The project wraps on characters,
+          because a path has no spaces to break on. */}
+      <text fg={failed() ? theme().feedback.error.base : theme().muted} wrapMode="word">
+        {failed() ? "unreachable" : (data()?.capabilities?.team?.name ?? instanceHint(data()))}
+      </text>
+      <text fg={noDirectory() ? theme().feedback.warning.base : theme().muted} wrapMode="char">
+        {noDirectory() ? "no project directory" : (directory() ?? "project unknown")}
+      </text>
 
       {/* Applications: status light, name, state. One section per config. */}
       <box border={["top"]} borderColor={theme().muted} flexDirection="column">
