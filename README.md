@@ -6,16 +6,29 @@ the model can use to inspect, deploy and configure your applications.
 
 ## Install
 
-```sh
-opencode plugin add @skyvence/coolify-oc
-```
+The plugin is split in two halves:
 
-That installs the package and adds it to your global `opencode.json(c)`. The
-sidebar half loads automatically through the package's `./tui` entry, so it does
-not also go in `cli.json`.
+- **Server** — the tools, RPC and skills. Published to npm, no UI.
+- **Client** — the sidebar. Installed locally, because an npm-packaged TUI
+  plugin cannot repaint in the current OpenCode (upstream
+  [#33884](https://github.com/anomalyco/opencode/issues/33884)): plugins loaded
+  from `node_modules` are skipped by OpenCode's OpenTUI/Solid transform and
+  build against a renderer the host never provided. Local plugins live outside
+  `node_modules`, so the transform runs and the sidebar bridges to the host.
+
+```sh
+# 1. Server half (stable, npm)
+opencode plugin add @skyvence/coolify-oc
+
+# 2. Client half (sidebar) — copies the TUI source into
+#    ~/.config/opencode/plugins/coolify-client/, outside node_modules
+npx --yes --package @skyvence/coolify-oc coolify-install-tui
+```
 
 Restart the TUI (`opencode service restart`), run `/coolify`, choose
 **Set up instance**, and enter your Coolify URL and API token.
+
+Re-run `coolify-install-tui` after upgrading the package to refresh the client.
 
 <details>
 <summary>Per project instead</summary>
@@ -32,7 +45,9 @@ that project's `opencode.jsonc`:
 ```
 
 Use one or the other, not both. A global and a project entry share the same
-plugin id, and OpenCode loads both, so the plugin would run twice.
+plugin id, and OpenCode loads both, so the plugin would run twice. This entry
+configures the **server** half only; the sidebar is still installed with
+`coolify-install-tui` above.
 
 </details>
 
