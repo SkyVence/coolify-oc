@@ -81,6 +81,15 @@ unlinked project shows a `link` action beside it: the first click links with
 the model in a background tab, a second click opens a paste box for a
 `coolify.json` you supply yourself.
 
+Below the applications, a **databases** section lists the project's databases
+with the same status light. Clicking one offers Restart, Start and Stop; a start
+or restart spins like an application restart until the container settles, while
+a stop is not followed by a spinner. Rows come from two sources, merged and
+de-duplicated by UUID: the config's `databases` map (which supplies the key,
+name and path scope) and every database whose `environment_id` belongs to the
+project — the only project attribution the Coolify API exposes, so a database
+created in the Coolify UI is still shown.
+
 **Configure** is the entry point for linking a project and for fixing the
 instance, so it is hidden once the instance answers *and* the project is
 already linked — there is nothing left behind it but a redundant re-link. It
@@ -237,7 +246,11 @@ so it is not disabled by the packaged TUI's `-opencode.coolify.tui` entry.
   applications and databases can be created.
 - `rollback`, `migrate_*`, `move_*` and the storage and backup verbs have not
   been exercised against a live instance — they are covered by mocked tests only.
-- `GET /databases` does not report a project or environment, so a database cannot
-  always be attributed to a project.
+- `GET /databases` does not report a project or environment, only the numeric
+  `environment_id`, so databases are attributed by joining that against the
+  project's environments. Database types Coolify never loads on
+  `GET /projects/{uuid}/{environment}` (keydb, dragonfly, clickhouse, sqlite)
+  are still found through the flat list. Tracked upstream as
+  [coollabsio/coolify#10449](https://github.com/coollabsio/coolify/issues/10449).
 - A Coolify API token's abilities are probed, not reported: nothing in the API
   exposes them, so `capabilities` shows the evidence for each verdict.

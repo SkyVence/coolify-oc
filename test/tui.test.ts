@@ -9,12 +9,16 @@ import {
   appRowLabel,
   appRowState,
   appRowTone,
+  databaseRowLabel,
+  databaseRowState,
+  databaseRowTone,
   environmentGroups,
   isLinked,
   markStartingUp,
   parseCoolifyArgument,
   projectGroupHeading,
   reconcileStartingUp,
+  reconcileStartingDatabases,
   refreshSeconds,
   shouldShowConfigure,
   statusLight,
@@ -437,10 +441,16 @@ describe("refreshSeconds", () => {
 
   it("polls fast while a restart is settling", () => {
     const running = { key: "web", applicationUUID: "a1", name: "web" } as any
-    const starting = [{ applicationUUID: "a1", startedAt: 0 }]
+    const starting = [{ id: "a1", startedAt: 0 }]
     expect(refreshSeconds([running], 25, starting)).toBe(10)
     // An unrelated starting application does not slow the deployment cadence.
-    expect(refreshSeconds([running], 25, [{ applicationUUID: "other", startedAt: 0 }])).toBe(25)
+    expect(refreshSeconds([running], 25, [{ id: "other", startedAt: 0 }])).toBe(25)
+  })
+
+  it("polls fast while a database is starting", () => {
+    expect(refreshSeconds([], 25, [], [{ id: "db1", startedAt: 0 }])).toBe(10)
+    // An unrelated database does not matter; only a tracked one does.
+    expect(refreshSeconds([], 25)).toBe(25)
   })
 })
 
@@ -475,7 +485,7 @@ describe("starting up detection", () => {
 
   it("detects an external restart between polls", () => {
     const next = reconcileStartingUp([], [running], [restarting], 1_000)
-    expect(next).toEqual([{ applicationUUID: "a1", startedAt: 1_000 }])
+    expect(next).toEqual([{ id: "a1", startedAt: 1_000 }])
   })
 
   it("treats a running container that exited as restarting, and a queued deployment too", () => {
@@ -486,18 +496,18 @@ describe("starting up detection", () => {
   })
 
   it("clears once the restart settles back to running", () => {
-    const held = [{ applicationUUID: "a1", startedAt: 0 }]
+    const held = [{ id: "a1", startedAt: 0 }]
     const settled = reconcileStartingUp(held, [restarting], [running], 30_000)
     expect(settled).toEqual([])
   })
 
   it("keeps spinning through a still-transitional poll", () => {
-    const held = [{ applicationUUID: "a1", startedAt: 0 }]
+    const held = [{ id: "a1", startedAt: 0 }]
     expect(reconcileStartingUp(held, [restarting], [restarting], 20_000)).toEqual(held)
   })
 
   it("expires after the timeout even if it never settled", () => {
-    const held = [{ applicationUUID: "a1", startedAt: 0 }]
+    const held = [{ id: "a1", startedAt: 0 }]
     expect(reconcileStartingUp(held, [restarting], [restarting], STARTING_TIMEOUT_MS)).toEqual([])
     expect(reconcileStartingUp(held, [restarting], [restarting], STARTING_TIMEOUT_MS - 1)).toEqual(held)
   })
@@ -514,7 +524,7 @@ describe("starting up detection", () => {
 
   it("holds a locally-triggered restart until the signal shows or the grace lapses", () => {
     const marked = markStartingUp([], "a1", 0)
-    expect(marked).toEqual([{ applicationUUID: "a1", startedAt: 0 }])
+    expect(marked).toEqual([{ id: "a1", startedAt: 0 }])
     // A poll that still shows the old running state does not clear it immediately.
     expect(reconcileStartingUp(marked, [running], [running], 5_000)).toEqual(marked)
     // Past the minimum spin, a still-running row is treated as settled.
@@ -529,18 +539,51 @@ describe("starting up detection", () => {
   })
 })
 
+describe("database starting up detection", () => {
+  const db = (over: any = {}) => ({ key: "pg", databaseUUID: "db1", name: "pg", ...over })
+  const running = db({ runtime: { state: "running", health: "healthy", label: "running", raw: "running:healthy" } })
+  const restarting = db({ runtime: { state: "restarting", health: "none", label: "restarting", raw: "restarting" } })
+  const exited = db({ runtime: { state: "exited", health: "none", label: "exited", raw: "exited" } })
+  const unknown = db({ runtime: { state: "unknown", health: "none", label: "unknown", raw: "" } })
+
+  it("detects an external database restart between polls", () => {
+    expect(reconcileStartingDatabases([], [running], [restarting], 1_000)).toEqual([{ id: "db1", startedAt: 1_000 }])
+  })
+
+  it("does not flag a database that was never up", () => {
+    // Never started: nothing to restart from.
+    expect(reconcileStartingDatabases([], [unknown], [exited], 0)).toEqual([])
+    // Newly appeared rows have no previous state at all.
+    expect(reconcileStartingDatabases([], [], [exited], 0)).toEqual([])
+  })
+
+  it("holds a locally-triggered start and clears it once running", () => {
+    const marked = markStartingUp([], "db1", 0)
+    // Still stopped: the minimum spin keeps the restart visible.
+    expect(reconcileStartingDatabases(marked, [exited], [exited], 5_000)).toEqual(marked)
+    // Once the container is up and the grace has lapsed, the spinner clears.
+    expect(reconcileStartingDatabases(marked, [exited], [running], 30_000)).toEqual([])
+  })
+
+  it("ignores a database row with no UUID to track", () => {
+    const anonymous = { key: "pg", name: "pg" }
+    expect(reconcileStartingDatabases([], [anonymous], [anonymous], 0)).toEqual([])
+  })
+})
+
 describe("applicationGroups", () => {
   const app = (name: string) => ({ key: name, applicationUUID: `${name}_uuid`, name }) as any
 
   it("keeps the single headingless group for one config, or none", () => {
     const web = app("web")
     expect(applicationGroups({ connected: true, apps: [web] } as any)).toEqual([
-      { apps: [web], environments: [{ apps: [web] }] },
+      { apps: [web], databases: [], environments: [{ apps: [web] }] },
     ])
-    expect(applicationGroups(undefined)).toEqual([{ apps: [], environments: [] }])
+    expect(applicationGroups(undefined)).toEqual([{ apps: [], databases: [], environments: [] }])
   })
 
   it("renders one headed section per config when several are present", () => {
+    const db = { key: "postgres", databaseUUID: "db_1", name: "postgres" }
     const payload = {
       connected: true,
       apps: [app("root")],
@@ -551,12 +594,14 @@ describe("applicationGroups", () => {
           projectUUID: "proj_root",
           configFile: "/repo/coolify.json",
           apps: [app("root")],
+          databases: [db],
         },
         {
           file: "/repo/apps/web/coolify.json",
           relativeFile: "apps/web/coolify.json",
           configFile: "/repo/apps/web/coolify.json",
           apps: [app("web")],
+          databases: [],
         },
       ],
     } as any
@@ -566,6 +611,44 @@ describe("applicationGroups", () => {
     expect(groups[0]?.heading).toBe("proj_root")
     expect(groups[1]?.heading).toBe("apps/web")
     expect(groups[1]?.apps).toEqual([app("web")])
+    // Databases travel with the config group that maps them.
+    expect(groups[0]?.databases).toEqual([db])
+    expect(groups[1]?.databases).toEqual([])
+  })
+})
+
+describe("database rows", () => {
+  const database = (over: any) => ({ key: "postgres", name: "postgres", ...over })
+
+  it("lights a running database and shows its state", () => {
+    const db = database({
+      runtime: { state: "running", health: "healthy", label: "running (healthy)", raw: "running:healthy" },
+    })
+    expect(databaseRowTone(db)).toBe("ok")
+    expect(databaseRowState(db)).toBe("running")
+    expect(databaseRowLabel(db)).toBe("postgres · running")
+    expect(statusLight(databaseRowTone(db))).toBe("●")
+  })
+
+  it("marks a running but unhealthy database", () => {
+    const db = database({
+      runtime: { state: "running", health: "unhealthy", label: "running (unhealthy)", raw: "running:unhealthy" },
+    })
+    expect(databaseRowState(db)).toBe("running !")
+    expect(databaseRowTone(db)).toBe("warn")
+  })
+
+  it("shows an exited database as down", () => {
+    const db = database({ runtime: { state: "exited", health: "none", label: "exited", raw: "exited" } })
+    expect(databaseRowTone(db)).toBe("bad")
+    expect(statusLight(databaseRowTone(db))).toBe("○")
+  })
+
+  it("falls back to the type when no runtime could be read", () => {
+    const db = database({ type: "postgresql" })
+    expect(databaseRowState(db)).toBe("postgresql")
+    expect(databaseRowTone(db)).toBe("unknown")
+    expect(statusLight(databaseRowTone(db))).toBe("◌")
   })
 })
 

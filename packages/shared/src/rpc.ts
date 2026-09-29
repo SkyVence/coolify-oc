@@ -137,6 +137,7 @@ export const Coolify = Rpc.define({
         refreshSeconds: integer,
         recursiveProjects: boolean,
         apps: { type: "array", items: unknownObject },
+        databases: { type: "array", items: unknownObject },
         projects: { type: "array", items: unknownObject },
         capabilities: capabilitiesSchema,
         message: string,
@@ -306,6 +307,27 @@ export interface AppStatusPayload {
 }
 
 /**
+ * One database row in the sidebar.
+ *
+ * `GET /databases` does not report a project or environment, only a numeric
+ * `environment_id`, so a row is attributed by joining that against the
+ * project's environments. The config's `databases` map contributes the key,
+ * name and path scope when it names the database; `databaseUUID` is absent
+ * only when a config entry had none and it could not be resolved by name.
+ */
+export interface DatabaseStatusPayload {
+  /** The key in the config's `databases` map. */
+  readonly key: string
+  readonly databaseUUID?: string
+  readonly name: string
+  /** Coolify's database type, when known (`postgresql`, `redis`, …). */
+  readonly type?: string
+  /** The repo-relative directory whose app owns this database, when scoped. */
+  readonly path?: string
+  readonly runtime?: RuntimePayload
+}
+
+/**
  * One `coolify.json` in the repository and the applications it maps.
  *
  * A repository can hold several of these — one at the root plus one per package
@@ -323,6 +345,8 @@ export interface ApplicationsProjectPayload {
   /** Alias of `file`, matching the top-level `configFile` field. */
   readonly configFile: string
   readonly apps: readonly AppStatusPayload[]
+  /** Databases shown for this config, config-mapped first. */
+  readonly databases: readonly DatabaseStatusPayload[]
 }
 
 export interface ApplicationsPayload {
@@ -338,6 +362,8 @@ export interface ApplicationsPayload {
   /** Idle refresh cadence the plugin was configured with, in seconds. */
   readonly refreshSeconds?: number
   readonly apps?: readonly AppStatusPayload[]
+  /** Databases shown for the selected config, config-mapped first. */
+  readonly databases?: readonly DatabaseStatusPayload[]
   /** Every config discovered in the repository, sorted by path. */
   readonly projects?: readonly ApplicationsProjectPayload[]
   readonly capabilities?: CapabilitiesPayload

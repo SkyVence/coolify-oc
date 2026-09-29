@@ -367,6 +367,101 @@ describe("recursiveProjects toggle", () => {
     expect((await h.handlers.applications({ scope: "mapped", directory })).recursiveProjects).toBe(false)
     await h.cleanup()
   })
+
+  it("shows the config's databases, with their live state", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({
+        applications: { web: { applicationUUID: "app_1" } },
+        databases: { postgres: { databaseUUID: "db_1", type: "postgresql" } },
+      }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "web" } },
+        {
+          method: "GET",
+          path: "/databases/db_1",
+          status: 200,
+          body: { uuid: "db_1", name: "pg", status: "running:healthy" },
+        },
+      ],
+    })
+
+    const payload = await h.handlers.applications({ scope: "mapped", directory })
+
+    expect(payload.databases).toHaveLength(1)
+    expect(payload.databases[0]).toMatchObject({ key: "postgres", databaseUUID: "db_1", name: "pg" })
+    expect(payload.databases[0].runtime.state).toBe("running")
+    await h.cleanup()
+  })
+
+  it("resolves a name-only database entry against the instance list", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(join(directory, "coolify.json"), JSON.stringify({ databases: { redis: { name: "cache" } } }), "utf8")
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/databases", status: 200, body: [{ uuid: "db_2", name: "cache", status: "running:healthy" }] },
+        {
+          method: "GET",
+          path: "/databases/db_2",
+          status: 200,
+          body: { uuid: "db_2", name: "cache", status: "running:healthy" },
+        },
+      ],
+    })
+
+    const payload = await h.handlers.applications({ scope: "mapped", directory })
+
+    expect(payload.databases).toHaveLength(1)
+    expect(payload.databases[0].databaseUUID).toBe("db_2")
+    await h.cleanup()
+  })
+
+  it("discovers databases the project owns through environment_id", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({ projectUUID: "proj_1", applications: { web: { applicationUUID: "app_1" } } }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "web" } },
+        {
+          method: "GET",
+          path: "/projects/proj_1/environments",
+          status: 200,
+          body: [{ id: 5, uuid: "env_1", name: "production" }],
+        },
+        {
+          method: "GET",
+          path: "/databases",
+          status: 200,
+          body: [
+            { uuid: "db_9", name: "pg", type: "postgresql", status: "running:healthy", environment_id: 5 },
+            { uuid: "db_other", name: "elsewhere", environment_id: 7 },
+          ],
+        },
+      ],
+    })
+
+    const payload = await h.handlers.applications({ scope: "mapped", directory })
+
+    // The config names no database at all; the project's own still appears, and
+    // the database in another environment does not.
+    expect(payload.databases?.map((row: any) => row.databaseUUID)).toEqual(["db_9"])
+    expect(payload.databases?.[0]?.runtime?.state).toBe("running")
+    await h.cleanup()
+  })
 })
 
 describe("RPC output schema", () => {

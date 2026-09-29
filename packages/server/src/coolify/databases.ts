@@ -31,6 +31,12 @@ export interface CoolifyDatabase {
   readonly type?: string
   readonly status?: string
   readonly project_uuid?: string
+  /**
+   * The environment's numeric id. `GET /databases` reports this but neither the
+   * project UUID nor the environment name, so it is the only key that can join
+   * a database back to the project that owns it.
+   */
+  readonly environment_id?: number | string
   readonly environment_name?: string
   readonly server_uuid?: string
   readonly internal_db_url?: string
@@ -78,10 +84,14 @@ function normalizeDatabase(value: Record<string, unknown>): Record<string, unkno
   const project = value.project_uuid ?? (isRecord(value.project) ? value.project.uuid : undefined)
   const environment =
     value.environment_name ?? (isRecord(value.environment) ? value.environment.name : undefined)
+  const environmentID = value.environment_id ?? value.environmentId
   return {
     ...value,
     ...(typeof type === "string" ? { type } : {}),
     ...(typeof project === "string" ? { project_uuid: project } : {}),
+    ...(typeof environmentID === "number" || typeof environmentID === "string"
+      ? { environment_id: environmentID }
+      : {}),
     ...(typeof environment === "string" ? { environment_name: environment } : {}),
   }
 }
