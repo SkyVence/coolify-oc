@@ -76,19 +76,32 @@ working client. A typo is reported rather than quietly opening the picker.
 
 The sidebar shows the instance, the working directory it is answering for, and
 one row per application with a status light, a compact state and a refresh
-countdown. Clicking a row offers Deploy, Logs, Restart and Roll back. An
-unlinked project shows a `link` action beside it: the first click links with
+countdown. Applications are grouped under their Coolify environment name
+whenever the project defines more than one — even if only one environment has
+apps — so a repository that maps the same application per environment stays
+readable. Clicking a row offers Deploy, Logs, Restart and Roll back, plus a
+model-driven setup path for a project that is not configured yet.
+
+**Deploy** triggers the build directly and streams Coolify's own deployment log
+into a scrolling panel, so no model turn is spent and progress is visible as it
+happens. A failed deployment offers a read-only session that opens knowing the
+deployment UUID, so the failure can be investigated without being able to
+change anything. **Logs** opens in the same kind of scrolling panel, pinned to
+the newest lines.
+
+An unlinked project shows a `link` action beside it: the first click links with
 the model in a background tab, a second click opens a paste box for a
 `coolify.json` you supply yourself.
 
 Below the applications, a **databases** section lists the project's databases
-with the same status light. Clicking one offers Restart, Start and Stop; a start
-or restart spins like an application restart until the container settles, while
-a stop is not followed by a spinner. Rows come from two sources, merged and
-de-duplicated by UUID: the config's `databases` map (which supplies the key,
-name and path scope) and every database whose `environment_id` belongs to the
-project — the only project attribution the Coolify API exposes, so a database
-created in the Coolify UI is still shown.
+with the same status light, each followed by its Coolify environment in muted
+grey when it can be determined. Clicking one offers Restart, Start and Stop; a
+start or restart spins like an application restart until the container
+settles, while a stop is not followed by a spinner. Rows come from two sources,
+merged and de-duplicated by UUID: the config's `databases` map (which supplies
+the key, name and path scope) and every database whose `environment_id` belongs
+to the project — the only project attribution the Coolify API exposes, so a
+database created in the Coolify UI is still shown.
 
 **Configure** is the entry point for linking a project and for fixing the
 instance, so it is hidden once the instance answers *and* the project is

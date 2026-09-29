@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  READ_ONLY_PERMISSIONS,
   STARTING_MIN_SPIN_MS,
   STARTING_TIMEOUT_MS,
   abbreviatePath,
@@ -396,6 +397,18 @@ describe("linking a project", () => {
   })
 })
 
+describe("read-only debug sessions", () => {
+  it("allows reads and denies every mutating Coolify tier", () => {
+    const effectFor = (action: string) =>
+      READ_ONLY_PERMISSIONS.find((rule) => rule.action === action)?.effect
+
+    expect(effectFor("coolify.read")).toBe("allow")
+    for (const action of ["coolify.write", "coolify.deploy", "coolify.destructive", "coolify.secrets"]) {
+      expect(effectFor(action)).toBe("deny")
+    }
+  })
+})
+
 describe("accessLevel", () => {
   const probes = (statuses: Record<string, string>) =>
     ({
@@ -577,9 +590,64 @@ describe("applicationGroups", () => {
   it("keeps the single headingless group for one config, or none", () => {
     const web = app("web")
     expect(applicationGroups({ connected: true, apps: [web] } as any)).toEqual([
-      { apps: [web], databases: [], environments: [{ apps: [web] }] },
+      { apps: [web], databases: [], environments: [{ apps: [web] }], showEnvironments: false },
     ])
-    expect(applicationGroups(undefined)).toEqual([{ apps: [], databases: [], environments: [] }])
+    expect(applicationGroups(undefined)).toEqual([
+      { apps: [], databases: [], environments: [], showEnvironments: false },
+    ])
+  })
+
+  it("labels the populated environment when the project defines more than one", () => {
+    // Only `production` has apps, but the project also has `staging`, so the
+    // lone group must still be named.
+    const web = { key: "web", applicationUUID: "web_uuid", name: "web", environment: "production" } as any
+    const groups = applicationGroups({
+      connected: true,
+      apps: [web],
+      environments: ["production", "staging"],
+    } as any)
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.environments.map((entry) => entry.environment)).toEqual(["production"])
+    expect(groups[0]?.showEnvironments).toBe(true)
+  })
+
+  it("stays unlabelled for a single-environment project", () => {
+    const web = { key: "web", applicationUUID: "web_uuid", name: "web", environment: "production" } as any
+    const groups = applicationGroups({ connected: true, apps: [web], environments: ["production"] } as any)
+
+    expect(groups[0]?.showEnvironments).toBe(false)
+  })
+
+  it("labels per config from that project's environment inventory", () => {
+    const web = { key: "web", applicationUUID: "web_uuid", name: "web", environment: "production" } as any
+    const worker = { key: "worker", applicationUUID: "worker_uuid", name: "worker" } as any
+    const payload = {
+      connected: true,
+      apps: [web],
+      projects: [
+        {
+          file: "/repo/coolify.json",
+          relativeFile: "coolify.json",
+          configFile: "/repo/coolify.json",
+          apps: [web],
+          databases: [],
+          environments: ["production", "staging"],
+        },
+        {
+          file: "/repo/apps/worker/coolify.json",
+          relativeFile: "apps/worker/coolify.json",
+          configFile: "/repo/apps/worker/coolify.json",
+          apps: [worker],
+          databases: [],
+          environments: ["production"],
+        },
+      ],
+    } as any
+
+    const groups = applicationGroups(payload)
+    expect(groups[0]?.showEnvironments).toBe(true)
+    expect(groups[1]?.showEnvironments).toBe(false)
   })
 
   it("renders one headed section per config when several are present", () => {

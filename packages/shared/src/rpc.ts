@@ -139,6 +139,7 @@ export const Coolify = Rpc.define({
         apps: { type: "array", items: unknownObject },
         databases: { type: "array", items: unknownObject },
         projects: { type: "array", items: unknownObject },
+        environments: { type: "array", items: string },
         capabilities: capabilitiesSchema,
         message: string,
       }),
@@ -168,6 +169,18 @@ export const Coolify = Rpc.define({
     logs: {
       input: object({ applicationUUID: string, lines: integer }),
       output: object({ logs: string, message: string }),
+    },
+    deployment: {
+      input: object({ deploymentUUID: string }, ["deploymentUUID"]),
+      output: object({
+        status: string,
+        raw: string,
+        logs: string,
+        commit: string,
+        commitMessage: string,
+        terminal: boolean,
+        message: string,
+      }),
     },
     deploy: {
       input: object({
@@ -324,6 +337,11 @@ export interface DatabaseStatusPayload {
   readonly type?: string
   /** The repo-relative directory whose app owns this database, when scoped. */
   readonly path?: string
+  /**
+   * The Coolify environment the database lives in, when the instance reports
+   * it or it can be joined through the project's environment ids.
+   */
+  readonly environment?: string
   readonly runtime?: RuntimePayload
 }
 
@@ -342,6 +360,13 @@ export interface ApplicationsProjectPayload {
   readonly relativeFile: string
   readonly projectUUID?: string
   readonly environmentName?: string
+  /**
+   * Every Coolify environment in this project, in Coolify's order. Read so the
+   * sidebar can label a populated environment even when it is the only one
+   * with rows — `apps` alone cannot tell a single-environment project from a
+   * multi-environment one that happens to have deployed only once.
+   */
+  readonly environments?: readonly string[]
   /** Alias of `file`, matching the top-level `configFile` field. */
   readonly configFile: string
   readonly apps: readonly AppStatusPayload[]
@@ -355,6 +380,8 @@ export interface ApplicationsPayload {
   readonly endpointConfigured?: boolean
   readonly projectUUID?: string
   readonly environmentName?: string
+  /** Every Coolify environment in the selected project, in Coolify's order. */
+  readonly environments?: readonly string[]
   readonly configFile?: string
   readonly scope?: "mapped" | "project"
   /** Whether the repository was walked for further configs. */
@@ -377,6 +404,23 @@ export interface DeploymentPayload {
   readonly updated_at?: string
   readonly commit?: string
   readonly commit_message?: string
+}
+
+/**
+ * One deployment's live state, polled while the sidebar watches a deploy it
+ * started. `logs` is Coolify's full build log for the deployment, not a tail.
+ */
+export interface DeploymentLogPayload {
+  /** Normalised status: queued, in_progress, finished, failed, cancelled. */
+  readonly status?: string
+  /** Coolify's raw status string. */
+  readonly raw?: string
+  readonly logs?: string
+  readonly commit?: string
+  readonly commitMessage?: string
+  /** True once the deployment can no longer change. */
+  readonly terminal?: boolean
+  readonly message?: string
 }
 
 export interface RuntimePayload {

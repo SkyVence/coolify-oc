@@ -387,7 +387,7 @@ describe("recursiveProjects toggle", () => {
           method: "GET",
           path: "/databases/db_1",
           status: 200,
-          body: { uuid: "db_1", name: "pg", status: "running:healthy" },
+          body: { uuid: "db_1", name: "pg", status: "running:healthy", environment_name: "production" },
         },
       ],
     })
@@ -397,6 +397,8 @@ describe("recursiveProjects toggle", () => {
     expect(payload.databases).toHaveLength(1)
     expect(payload.databases[0]).toMatchObject({ key: "postgres", databaseUUID: "db_1", name: "pg" })
     expect(payload.databases[0].runtime.state).toBe("running")
+    // The database's own `environment_name` is used when the project is unknown.
+    expect(payload.databases[0].environment).toBe("production")
     await h.cleanup()
   })
 
@@ -460,6 +462,97 @@ describe("recursiveProjects toggle", () => {
     // the database in another environment does not.
     expect(payload.databases?.map((row: any) => row.databaseUUID)).toEqual(["db_9"])
     expect(payload.databases?.[0]?.runtime?.state).toBe("running")
+    // The numeric `environment_id` is joined back to the environment's name.
+    expect(payload.databases?.[0]?.environment).toBe("production")
+    expect(payload.environments).toEqual(["production"])
+    await h.cleanup()
+  })
+
+  it("reports every environment even when only one has applications", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(join(directory, "coolify.json"), JSON.stringify({ projectUUID: "proj_1" }), "utf8")
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        {
+          method: "GET",
+          path: "/projects/proj_1/environments",
+          status: 200,
+          body: [
+            { id: 5, uuid: "env_1", name: "production" },
+            { id: 6, uuid: "env_2", name: "staging" },
+          ],
+        },
+        { method: "GET", path: "/projects/proj_1/env_1", status: 200, body: { applications: [{ uuid: "app_1", name: "web" }] } },
+        { method: "GET", path: "/projects/proj_1/env_2", status: 200, body: { applications: [] } },
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "web" } },
+      ],
+    })
+
+    const payload = await h.handlers.applications({ scope: "project", directory })
+
+    expect(payload.environments).toEqual(["production", "staging"])
+    // Only `production` has an application, but the inventory still names both.
+    expect(payload.apps?.map((row: any) => row.environment)).toEqual(["production"])
+    await h.cleanup()
+  })
+})
+
+describe("deployment read", () => {
+  it("returns a running deployment's status and logs", async () => {
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        {
+          method: "GET",
+          path: "/deployments/dep_1",
+          status: 200,
+          body: { deployment_uuid: "dep_1", status: "running", commit: "abc123", logs: "step 1\nstep 2" },
+        },
+      ],
+    })
+
+    const result = await h.handlers.deployment({ deploymentUUID: "dep_1" }, RPC_CONTEXT)
+
+    expect(result).toMatchObject({
+      status: "in_progress",
+      raw: "running",
+      terminal: false,
+      commit: "abc123",
+    })
+    expect(result.logs).toContain("step 2")
+    await h.cleanup()
+  })
+
+  it("marks a failed deployment terminal so the panel can offer a debug session", async () => {
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        {
+          method: "GET",
+          path: "/deployments/dep_2",
+          status: 200,
+          body: { deployment_uuid: "dep_2", status: "failed", logs: "boom" },
+        },
+      ],
+    })
+
+    const result = await h.handlers.deployment({ deploymentUUID: "dep_2" }, RPC_CONTEXT)
+
+    expect(result).toMatchObject({ status: "failed", terminal: true })
+    await h.cleanup()
+  })
+
+  it("refuses without a deployment UUID, without touching the API", async () => {
+    const h = await harness({ token: TOKEN })
+
+    const result = await h.handlers.deployment({}, RPC_CONTEXT)
+
+    expect(result.message).toContain("deploymentUUID")
+    expect(result.terminal).toBe(false)
     await h.cleanup()
   })
 })

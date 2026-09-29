@@ -7,6 +7,8 @@ import { probeCapabilities } from "./coolify/capabilities"
 import { CoolifyClient, normalizeEndpoint } from "./coolify/client"
 import {
   cancelDeployment,
+  getDeployment,
+  isTerminal,
   listApplicationDeployments,
   listDeployments,
   triggerDeploy,
@@ -26,8 +28,9 @@ import {
   type Capability,
   type CapabilityReport,
   type CoolifyDeployment,
+  type CoolifyEnvironment,
 } from "./coolify/types"
-import { parseApplicationStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
+import { normalizeDeploymentStatus, parseApplicationStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import { parseRecursiveProjects, parseRefreshSeconds } from "@skyvence/coolify-oc-shared/options"
 import {
   databasesFor,
@@ -315,6 +318,29 @@ export default Plugin.define({
             logs.trim() === ""
               ? "Coolify returned no logs. That usually means the token lacks read:sensitive rather than an empty container log."
               : "",
+        }
+      },
+
+      deployment: async (input, context) => {
+        const deploymentUUID = (input as { deploymentUUID?: string } | undefined)?.deploymentUUID
+        if (typeof deploymentUUID !== "string" || deploymentUUID === "") {
+          return { status: "unknown", logs: "", terminal: false, message: "`deploymentUUID` is required." }
+        }
+        if (!client) {
+          return { status: "unknown", logs: "", terminal: false, message: "No Coolify API token is connected." }
+        }
+        const deployment = await getDeployment(client, deploymentUUID, context.signal).catch(() => undefined)
+        if (!deployment) {
+          return { status: "unknown", logs: "", terminal: false, message: "Coolify did not return that deployment." }
+        }
+        const status = normalizeDeploymentStatus(deployment.status)
+        return {
+          status,
+          raw: deployment.status ?? "unknown",
+          logs: typeof deployment.logs === "string" ? deployment.logs : "",
+          ...(deployment.commit ? { commit: deployment.commit } : {}),
+          ...(deployment.commit_message ? { commitMessage: deployment.commit_message } : {}),
+          terminal: isTerminal(status),
         }
       },
 
@@ -617,6 +643,46 @@ export default Plugin.define({
       const queueOnce = () => (queuePromise ??= listDeployments(client!, undefined).catch(() => []))
 
       /**
+       * The project's environments, read at most once per payload. The same list
+       * backs application grouping, database attribution and the environment
+       * inventory the sidebar labels rows with. Empty when the project is
+       * unknown or the call fails, in which case rows simply stay ungrouped.
+       */
+      const environmentCache = new Map<string, Promise<readonly CoolifyEnvironment[]>>()
+      const projectEnvironments = (projectUUID: string): Promise<readonly CoolifyEnvironment[]> => {
+        const cached = environmentCache.get(projectUUID)
+        if (cached) return cached
+        const promise = listEnvironments(client!, projectUUID).catch(() => [] as CoolifyEnvironment[])
+        environmentCache.set(projectUUID, promise)
+        return promise
+      }
+
+      /** The environment names, de-duplicated and kept in Coolify's order. */
+      const projectEnvironmentNames = async (projectUUID: string | undefined): Promise<string[]> => {
+        if (!projectUUID) return []
+        const names: string[] = []
+        for (const environment of await projectEnvironments(projectUUID)) {
+          const name = environment.name ?? environment.uuid
+          if (name && !names.includes(name)) names.push(name)
+        }
+        return names
+      }
+
+      /** An `environment_id` → name map, so a database can be attributed. */
+      const projectEnvironmentNamesByID = async (
+        projectUUID: string | undefined,
+      ): Promise<Map<string, string>> => {
+        const map = new Map<string, string>()
+        if (!projectUUID) return map
+        for (const environment of await projectEnvironments(projectUUID)) {
+          if (environment.id === undefined) continue
+          const name = environment.name ?? environment.uuid
+          if (name) map.set(String(environment.id), name)
+        }
+        return map
+      }
+
+      /**
        * Which Coolify environment each application belongs to.
        *
        * `GET /applications/:uuid` does not report the environment, so it is
@@ -626,8 +692,7 @@ export default Plugin.define({
       let environmentByApplication: ReadonlyMap<string, string> | undefined
       const mapEnvironments = async (projectUUID: string): Promise<Map<string, string>> => {
         const map = new Map<string, string>()
-        const environments = await listEnvironments(client!, projectUUID).catch(() => [])
-        for (const environment of environments) {
+        for (const environment of await projectEnvironments(projectUUID)) {
           const name = environment.name ?? environment.uuid
           if (!name) continue
           const detail = await client!
@@ -715,18 +780,11 @@ export default Plugin.define({
       const databaseListOnce = (): Promise<readonly CoolifyDatabase[]> =>
         (databaseListPromise ??= listDatabases(client!).catch(() => [] as CoolifyDatabase[]))
 
-      const environmentIDCache = new Map<string, Promise<ReadonlySet<string>>>()
-      const projectEnvironmentIDs = (projectUUID: string): Promise<ReadonlySet<string>> => {
-        const cached = environmentIDCache.get(projectUUID)
-        if (cached) return cached
-        const promise = listEnvironments(client!, projectUUID)
-          .then((environments) => new Set(environments.flatMap((e) => (e.id === undefined ? [] : [String(e.id)]))))
-          .catch(() => new Set<string>())
-        environmentIDCache.set(projectUUID, promise)
-        return promise
-      }
-
-      const databaseRow = async (key: string, entry: ProjectConfigDatabase): Promise<DatabaseStatusPayload> => {
+      const databaseRow = async (
+        key: string,
+        entry: ProjectConfigDatabase,
+        environmentNames: ReadonlyMap<string, string>,
+      ): Promise<DatabaseStatusPayload> => {
         let uuid = entry.databaseUUID
         if (!uuid) {
           const wanted = (entry.name ?? key).trim().toLowerCase()
@@ -737,12 +795,18 @@ export default Plugin.define({
         }
         const database = uuid ? await getDatabase(client!, uuid).catch(() => undefined) : undefined
         const type = database?.type ?? entry.type
+        const environment =
+          database?.environment_name ??
+          (database?.environment_id === undefined
+            ? undefined
+            : environmentNames.get(String(database.environment_id)))
         return {
           key,
           ...(uuid ? { databaseUUID: uuid } : {}),
           name: database?.name ?? entry.name ?? key,
           ...(type ? { type } : {}),
           ...(entry.path ? { path: entry.path } : {}),
+          ...(environment ? { environment } : {}),
           ...(database ? { runtime: databaseRuntime(database) } : {}),
         }
       }
@@ -753,28 +817,32 @@ export default Plugin.define({
       ): Promise<DatabaseStatusPayload[]> => {
         const rows: DatabaseStatusPayload[] = []
         const covered = new Set<string>()
+        const environmentNames = await projectEnvironmentNamesByID(projectUUID)
 
         // Config-mapped first, so their key, name and path win.
         const entries = projectConfig ? Object.entries(databasesFor(projectConfig, base)).slice(0, 12) : []
-        const mapped = await Promise.all(entries.map(([key, entry]) => databaseRow(key, entry)))
+        const mapped = await Promise.all(
+          entries.map(([key, entry]) => databaseRow(key, entry, environmentNames)),
+        )
         for (const row of mapped) {
           rows.push(row)
           if (row.databaseUUID) covered.add(row.databaseUUID)
         }
 
         // Then anything else the project owns.
-        const environmentIDs = projectUUID ? await projectEnvironmentIDs(projectUUID) : undefined
-        if (environmentIDs && environmentIDs.size > 0) {
+        if (environmentNames.size > 0) {
           for (const database of await databaseListOnce()) {
             const environmentID = database.environment_id === undefined ? undefined : String(database.environment_id)
-            if (!environmentID || !environmentIDs.has(environmentID)) continue
+            if (!environmentID || !environmentNames.has(environmentID)) continue
             if (!database.uuid || covered.has(database.uuid)) continue
             covered.add(database.uuid)
+            const environment = database.environment_name ?? environmentNames.get(environmentID)
             rows.push({
               key: databaseSlug(database.name ?? database.uuid),
               databaseUUID: database.uuid,
               name: database.name ?? database.uuid,
               ...(database.type ? { type: database.type } : {}),
+              ...(environment ? { environment } : {}),
               runtime: databaseRuntime(database),
             })
           }
@@ -788,13 +856,15 @@ export default Plugin.define({
       let projects: ApplicationsProjectPayload[] | undefined
       let configFile = config?.file
       let databases: DatabaseStatusPayload[] = []
+      let environments: readonly string[] = []
       if (mode === "project" && projectUUID) {
         // Applications do not report a usable `project_uuid`, so the project is
         // read through its environments instead. Filtering the flat
         // `/applications` list by project silently returned nothing.
-        const environments = await listEnvironments(client, projectUUID).catch(() => [])
+        const projectEnvironmentList = await projectEnvironments(projectUUID)
+        environments = await projectEnvironmentNames(projectUUID)
         const members: { uuid: string; name: string }[] = []
-        for (const environment of environments) {
+        for (const environment of projectEnvironmentList) {
           const detail = await client!
             .request<{ applications?: readonly { uuid?: string; name?: string }[] }>({
               method: "GET",
@@ -821,31 +891,38 @@ export default Plugin.define({
         // deeper than the walk bound it must still be shown.
         if (config && !configs.some((entry) => entry.file === config.file)) configs.unshift(config)
         projects = await Promise.all(
-          configs.map(async (projectConfig) => ({
-            file: projectConfig.file,
-            relativeFile: relativePath(root, projectConfig.file).split("\\").join("/"),
-            ...(projectConfig.projectUUID === undefined ? {} : { projectUUID: projectConfig.projectUUID }),
-            ...(projectConfig.environmentName === undefined
-              ? {}
-              : { environmentName: projectConfig.environmentName }),
-            configFile: projectConfig.file,
-            apps: await buildRows(projectConfig, projectConfig.file === config?.file),
-            databases: await buildDatabaseRows(projectConfig, projectConfig.projectUUID),
-          })),
+          configs.map(async (projectConfig) => {
+            const environmentNames = await projectEnvironmentNames(projectConfig.projectUUID)
+            return {
+              file: projectConfig.file,
+              relativeFile: relativePath(root, projectConfig.file).split("\\").join("/"),
+              ...(projectConfig.projectUUID === undefined ? {} : { projectUUID: projectConfig.projectUUID }),
+              ...(projectConfig.environmentName === undefined
+                ? {}
+                : { environmentName: projectConfig.environmentName }),
+              ...(environmentNames.length > 0 ? { environments: environmentNames } : {}),
+              configFile: projectConfig.file,
+              apps: await buildRows(projectConfig, projectConfig.file === config?.file),
+              databases: await buildDatabaseRows(projectConfig, projectConfig.projectUUID),
+            }
+          }),
         )
         const selectedProject = projects.find((entry) => entry.file === config?.file) ?? projects[0]
         if (selectedProject) {
           configFile = selectedProject.file
           apps.push(...selectedProject.apps)
           databases = [...selectedProject.databases]
+          environments = selectedProject.environments ?? []
         } else {
           // No config anywhere: keep the pinned-application fallback.
           apps.push(...(await buildRows(config, true)))
           databases = await buildDatabaseRows(config, projectUUID)
+          environments = await projectEnvironmentNames(projectUUID)
         }
       } else {
         apps.push(...(await buildRows(config, true)))
         databases = await buildDatabaseRows(config, projectUUID)
+        environments = await projectEnvironmentNames(projectUUID)
       }
 
       return {
@@ -855,6 +932,7 @@ export default Plugin.define({
         ...(projectUUID ? { projectUUID } : {}),
         ...(config?.environmentName ? { environmentName: config.environmentName } : {}),
         ...(configFile ? { configFile } : {}),
+        ...(environments.length > 0 ? { environments } : {}),
         scope: mode,
         refreshSeconds,
         recursiveProjects,

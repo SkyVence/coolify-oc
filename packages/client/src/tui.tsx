@@ -2,7 +2,7 @@
 import type { Integration } from "@opencode/plugin"
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import type { KeymapLayer } from "@opencode/plugin/tui/context"
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { normalizeDeploymentStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import { runtimeTone, type RuntimeTone } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import { DEFAULT_REFRESH_SECONDS } from "@skyvence/coolify-oc-shared/options"
@@ -15,6 +15,7 @@ import {
   type CapabilitiesPayload,
   type CandidatePayload,
   type DatabaseStatusPayload,
+  type DeploymentLogPayload,
   type ResolvePayload,
 } from "@skyvence/coolify-oc-shared/rpc"
 
@@ -49,6 +50,29 @@ export const STARTING_MIN_SPIN_MS = 15_000
 /** Event-triggered reloads are trailing-debounced so a burst costs one request. */
 const EVENT_DEBOUNCE_MS = 1_500
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+/** How many log lines the application log panel asks Coolify for. */
+const LOG_LINES = 500
+/** How often an open panel re-reads while it is visible. */
+const LOG_POLL_MS = 4_000
+const DEPLOYMENT_POLL_MS = 2_000
+
+/**
+ * A side chat's default rules: free to read, and every change still asks.
+ */
+const SIDE_CHAT_PERMISSIONS = [{ action: "coolify.read", resource: "*", effect: "allow" as const }]
+
+/**
+ * A debug session's rules: read Coolify, change nothing. A `deny` rule removes
+ * the tool from the model's view entirely (see the README), so it cannot even
+ * offer a write.
+ */
+export const READ_ONLY_PERMISSIONS = [
+  { action: "coolify.read", resource: "*", effect: "allow" as const },
+  { action: "coolify.write", resource: "*", effect: "deny" as const },
+  { action: "coolify.deploy", resource: "*", effect: "deny" as const },
+  { action: "coolify.destructive", resource: "*", effect: "deny" as const },
+  { action: "coolify.secrets", resource: "*", effect: "deny" as const },
+]
 
 /** The runtime supports location-aware RPC calls, although the plugin SDK type narrows them. */
 interface RpcLocationOptions {
@@ -233,9 +257,16 @@ export default Plugin.define({
      * the runtime expands the registered skill into the message, so the same
      * skill serves a client that exposes skills but not plugin tools.
      */
-    async function runInSideChat(title: string, skill: CoolifySkill, text: string): Promise<boolean> {
+    async function runInSideChat(
+      title: string,
+      text: string,
+      options: {
+        skill?: CoolifySkill
+        permissions?: { action: string; resource: string; effect: "allow" | "deny" | "ask" }[]
+      } = {},
+    ): Promise<boolean> {
       // `promptInput`, not `message`: `message` is the error formatter below.
-      const promptInput = { text, skills: [{ id: skill.id }] }
+      const promptInput = { text, ...(options.skill ? { skills: [{ id: options.skill.id }] } : {}) }
       if (!context.ui.tabs.enabled()) {
         const runHere = await context.ui.dialog.confirm({
           title: "Tabs are disabled",
@@ -257,7 +288,7 @@ export default Plugin.define({
         const created = await context.client.session.create({
           title,
           location: { directory },
-          permissions: [{ action: "coolify.read", resource: "*", effect: "allow" }],
+          permissions: options.permissions ?? SIDE_CHAT_PERMISSIONS,
         })
         const sessionID = created?.id
         if (!sessionID) {
@@ -278,12 +309,31 @@ export default Plugin.define({
       const text = app
         ? `Target application: ${app.name} (${app.applicationUUID}).`
         : "Set up and deploy this project on Coolify."
-      await runInSideChat(app ? `Deploy ${app.name}` : "Coolify deploy", DEPLOY_SKILL, text)
+      await runInSideChat(app ? `Deploy ${app.name}` : "Coolify deploy", text, { skill: DEPLOY_SKILL })
+    }
+
+    /**
+     * A read-only session that looks into a failed deployment. The permissions
+     * deny every mutating tier, so the model can investigate but not change
+     * anything; the deployment UUID is passed explicitly because the session
+     * starts in the project directory, not on the deployment screen.
+     */
+    async function debugDeployment(app: AppStatusPayload, deploymentUUID: string): Promise<void> {
+      const text = [
+        `Deployment ${deploymentUUID} of ${app.name} failed on Coolify.`,
+        `Application UUID: ${app.applicationUUID}.`,
+        "Find out why it failed using the coolify tools: read the deployment and its logs, the application's recent deployments, and its settings.",
+        "You have read-only access — do not deploy, restart, change settings, or delete anything.",
+        "Explain the failure and what would need to change.",
+      ].join("\n")
+      await runInSideChat(`Debug ${app.name}`, text, { permissions: READ_ONLY_PERMISSIONS })
     }
 
     /** The model-driven linking: needed for a monorepo, or when nothing matches. */
     async function linkWithModel(): Promise<boolean> {
-      return await runInSideChat("Link repository", LINK_SKILL, "Link this repository to its Coolify applications.")
+      return await runInSideChat("Link repository", "Link this repository to its Coolify applications.", {
+        skill: LINK_SKILL,
+      })
     }
 
     /**
@@ -510,13 +560,44 @@ export default Plugin.define({
       }
     }
 
+    /** Application logs in a bounded, scrollable panel that starts at the tail. */
     async function showLogs(app: AppStatusPayload | undefined): Promise<void> {
-      const result = (await rpc.logs({ applicationUUID: app?.applicationUUID, lines: 80 })) as {
-        logs?: string
-        message?: string
-      }
-      const body = result.logs?.trim() ? result.logs.slice(-3_000) : (result.message ?? "No logs.")
-      await context.ui.dialog.alert({ title: `Logs · ${app?.name ?? "application"}`, message: body })
+      await openDialog(context, "xlarge", (close) => (
+        <LogsPopup
+          context={context}
+          applicationUUID={app?.applicationUUID}
+          applicationName={app?.name ?? "application"}
+          onClose={close}
+        />
+      ))
+    }
+
+    /**
+     * Deploy directly from the sidebar and watch Coolify build it. No model turn
+     * is spent; the deployment's own log streams into the panel, and a failure
+     * offers a read-only session to investigate it.
+     */
+    async function openDeployment(app: AppStatusPayload): Promise<void> {
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Deploy ${app.name}`,
+        message: `Build and deploy ${app.name} on Coolify now?`,
+        label: { confirm: "Deploy", cancel: "Cancel" },
+      })
+      if (!confirmed) return
+      sidebarControls?.markStarting(app.applicationUUID)
+      await openDialog(context, "xlarge", (close) => (
+        <DeploymentPopup
+          context={context}
+          applicationUUID={app.applicationUUID}
+          applicationName={app.name}
+          onRefresh={() => sidebarControls?.refresh()}
+          onDebug={(deploymentUUID) => {
+            close()
+            void debugDeployment(app, deploymentUUID)
+          }}
+          onClose={close}
+        />
+      ))
     }
 
     /**
@@ -527,16 +608,18 @@ export default Plugin.define({
       const choice = await context.ui.dialog.select<string>({
         title: app.name,
         options: [
-          { title: "Deploy in a side chat", value: "deploy", description: "opens a background tab" },
+          { title: "Deploy", value: "deploy", description: "live build logs" },
           { title: "View logs", value: "logs" },
           { title: "Restart", value: "restart" },
           { title: "Roll back to a commit", value: "rollback" },
+          { title: "Set up & deploy with the model", value: "model", description: "opens a background tab" },
         ],
       })
       if (!choice) return
 
       try {
-        if (choice === "deploy") return await deployInSideChat(app)
+        if (choice === "deploy") return await openDeployment(app)
+        if (choice === "model") return await deployInSideChat(app)
         if (choice === "logs") return await showLogs(app)
 
         if (choice === "restart") {
@@ -936,9 +1019,10 @@ function CoolifySidebar(props: {
                 {(environment, envIndex) => (
                   <box flexDirection="column">
                     {/* A repository often maps the same application once per
-                        environment, so the environment is a section of its
-                        own whenever a config spans more than one. */}
-                    <Show when={group.environments.length > 1}>
+                        environment, and a project can define several even when
+                        only one has apps, so the label follows the project's
+                        inventory rather than the number of populated groups. */}
+                    <Show when={group.showEnvironments}>
                       <text fg={theme().muted} wrapMode="none" truncate>
                         {environment.environment ?? "no environment"}
                       </text>
@@ -1040,9 +1124,21 @@ function CoolifySidebar(props: {
                               {SPINNER[frame() % SPINNER.length]}
                             </text>
                           </Show>
-                          <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
-                            {database.name}
-                          </text>
+                          {/* Name and environment travel together on the left;
+                              the environment is muted grey so the name keeps the
+                              primary colour. A grow wrapper, rather than the
+                              name alone, keeps the environment hugging the name
+                              instead of being pushed against the state. */}
+                          <box flexDirection="row" gap={1} flexGrow={1} minWidth={0}>
+                            <text fg={theme().base} wrapMode="none" truncate minWidth={0}>
+                              {database.name}
+                            </text>
+                            <Show when={database.environment}>
+                              <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+                                {`· ${database.environment}`}
+                              </text>
+                            </Show>
+                          </box>
                           <text fg={theme().muted} wrapMode="none" flexShrink={0}>
                             {databaseRowState(database)}
                           </text>
@@ -1070,6 +1166,277 @@ function CoolifySidebar(props: {
           </text>
         </box>
       </Show>
+    </box>
+  )
+}
+
+/**
+ * Show a custom dialog and resolve when it closes. `render` receives a `close`
+ * callback for the component's own buttons; the host also calls `onClose` for
+ * escape and outside clicks, so both paths settle the same promise.
+ */
+function openDialog(
+  context: PluginContext,
+  size: "medium" | "large" | "xlarge",
+  render: (close: () => void) => JSX.Element,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    const close = () => {
+      context.ui.dialog.clear()
+      finish()
+    }
+    context.ui.dialog.set({ size, centered: true })
+    context.ui.dialog.show(() => render(close), finish)
+  })
+}
+
+/**
+ * A bounded, self-scrolling log viewport.
+ *
+ * `stickyScroll` with `stickyStart="bottom"` keeps the newest lines in view as
+ * output arrives, and only stops following once the reader scrolls up. The
+ * viewport is a `scrollbox`, not a `text`, so a long build cannot push the
+ * dialog past the edge of the terminal.
+ */
+function LogView(props: { context: PluginContext; text: string }) {
+  const theme = () => props.context.theme.text
+  return (
+    <scrollbox
+      flexGrow={1}
+      minHeight={6}
+      focused
+      stickyScroll
+      stickyStart="bottom"
+      border={["top"]}
+      borderColor={theme().muted}
+    >
+      <text fg={theme().base} wrapMode="word">
+        {props.text}
+      </text>
+    </scrollbox>
+  )
+}
+
+/**
+ * Application logs, refreshed while open. The panel asks for the tail and the
+ * scrollbox starts at the bottom, so it opens on the latest output rather than
+ * the oldest.
+ */
+function LogsPopup(props: {
+  context: PluginContext
+  applicationUUID?: string
+  applicationName: string
+  onClose: () => void
+}) {
+  const context = props.context
+  const rpc = context.client.rpc(CoolifyRpc)
+  const theme = () => context.theme.text
+  const action = () => theme().feedback.info?.base ?? theme().base
+  const [body, setBody] = createSignal("Loading logs…")
+  const [busy, setBusy] = createSignal(false)
+
+  const load = async () => {
+    setBusy(true)
+    try {
+      const result = (await rpc.logs({ applicationUUID: props.applicationUUID, lines: LOG_LINES })) as {
+        logs?: string
+        message?: string
+      }
+      const logs = result.logs?.trim()
+      setBody(logs && logs !== "" ? logs : (result.message ?? "No logs."))
+    } catch (cause) {
+      setBody(`Could not read logs: ${message(cause)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  onMount(() => {
+    void load()
+    const timer = setInterval(() => void load(), LOG_POLL_MS)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  return (
+    <box flexDirection="column" gap={1} padding={1} height="100%">
+      <text attributes={BOLD} fg={theme().base} wrapMode="none" truncate>
+        {`Logs · ${props.applicationName}`}
+      </text>
+      <LogView context={context} text={body()} />
+      <box flexDirection="row" gap={2}>
+        <text fg={action()} wrapMode="none" onMouseUp={() => void load()}>
+          {busy() ? "refreshing…" : "refresh"}
+        </text>
+        <text fg={theme().muted} wrapMode="none" onMouseUp={props.onClose}>
+          close
+        </text>
+      </box>
+    </box>
+  )
+}
+
+/**
+ * A deployment started from the sidebar, with Coolify's own build log streamed
+ * in as it runs. The log is polled rather than waited on, so the panel stays
+ * responsive and the deployment UUID can be handed to a debug session if the
+ * build fails.
+ */
+function DeploymentPopup(props: {
+  context: PluginContext
+  applicationUUID: string
+  applicationName: string
+  onRefresh: () => void
+  onDebug: (deploymentUUID: string) => void
+  onClose: () => void
+}) {
+  const context = props.context
+  const rpc = context.client.rpc(CoolifyRpc)
+  const theme = () => context.theme.text
+  const action = () => theme().feedback.info?.base ?? theme().base
+  const [deploymentUUID, setDeploymentUUID] = createSignal<string | undefined>()
+  const [status, setStatus] = createSignal("queued")
+  const [logs, setLogs] = createSignal("")
+  const [note, setNote] = createSignal<string | undefined>()
+  const [terminal, setTerminal] = createSignal(false)
+  const [frame, setFrame] = createSignal(0)
+
+  const tone = (): LineTone => {
+    if (status() === "failed") return "bad"
+    if (status() === "cancelled") return "muted"
+    if (status() === "finished") return "ok"
+    if (status() === "queued" || status() === "in_progress") return "warn"
+    return "unknown"
+  }
+  const statusWord = (): string => {
+    if (status() === "in_progress") return "building"
+    if (status() === "queued") return "queued"
+    if (status() === "finished") return "finished"
+    if (status() === "cancelled") return "cancelled"
+    return status()
+  }
+  const running = (): boolean => !terminal()
+  const body = (): string =>
+    logs().trim() === "" ? (note() ?? "Waiting for the build to produce output…") : logs()
+
+  const cancel = async (): Promise<void> => {
+    const uuid = deploymentUUID()
+    if (!uuid) return
+    await rpc.cancelDeployment({ deploymentUUID: uuid }).catch(() => undefined)
+    setNote("Cancellation requested.")
+  }
+
+  onMount(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const spin = setInterval(() => setFrame((value) => value + 1), 100)
+    const sleep = (ms: number) => new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms)
+    })
+
+    const poll = async (uuid: string): Promise<void> => {
+      while (!cancelled) {
+        const data = (await rpc.deployment({ deploymentUUID: uuid }).catch(() => undefined)) as
+          | DeploymentLogPayload
+          | undefined
+        if (cancelled) return
+        if (data) {
+          setStatus(normalizeDeploymentStatus(data.status))
+          if (typeof data.logs === "string") setLogs(data.logs)
+          if (data.message) setNote(data.message)
+          if (data.terminal === true) {
+            setTerminal(true)
+            props.onRefresh()
+            return
+          }
+        }
+        await sleep(DEPLOYMENT_POLL_MS)
+      }
+    }
+
+    const kick = async (): Promise<void> => {
+      try {
+        const result = (await rpc.deploy({
+          action: "deploy",
+          applicationUUID: props.applicationUUID,
+          wait: false,
+        })) as { tickets?: readonly { deploymentUUID?: string }[]; message?: string }
+        if (cancelled) return
+        const uuid = result.tickets?.[0]?.deploymentUUID
+        if (!uuid) {
+          setStatus("failed")
+          setTerminal(true)
+          setNote(result.message ?? "Coolify accepted the request but returned no deployment.")
+          return
+        }
+        setDeploymentUUID(uuid)
+        props.onRefresh()
+        await poll(uuid)
+      } catch (cause) {
+        if (cancelled) return
+        setStatus("failed")
+        setTerminal(true)
+        setNote(message(cause))
+      }
+    }
+
+    void kick()
+    onCleanup(() => {
+      cancelled = true
+      clearInterval(spin)
+      if (timer) clearTimeout(timer)
+    })
+  })
+
+  return (
+    <box flexDirection="column" gap={1} padding={1} height="100%">
+      <box flexDirection="row" gap={1}>
+        <Show
+          when={status() === "queued" || status() === "in_progress"}
+          fallback={<text fg={toneColour(theme(), tone())}>{statusLight(tone())}</text>}
+        >
+          <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
+        </Show>
+        <text attributes={BOLD} fg={theme().base} wrapMode="none" truncate>
+          {`Deploy · ${props.applicationName} · ${statusWord()}`}
+        </text>
+      </box>
+
+      <Show when={status() === "failed"}>
+        <text fg={toneColour(theme(), "bad")} wrapMode="word">
+          The deployment failed. Start a read-only session to find out why.
+        </text>
+      </Show>
+
+      <LogView context={context} text={body()} />
+
+      <box flexDirection="row" gap={2}>
+        <Show when={status() === "failed"}>
+          <text
+            fg={action()}
+            wrapMode="none"
+            onMouseUp={() => {
+              const uuid = deploymentUUID()
+              if (uuid) props.onDebug(uuid)
+            }}
+          >
+            debug in a read-only session
+          </text>
+        </Show>
+        <Show when={running()}>
+          <text fg={theme().muted} wrapMode="none" onMouseUp={() => void cancel()}>
+            cancel
+          </text>
+        </Show>
+        <text fg={theme().muted} wrapMode="none" onMouseUp={props.onClose}>
+          close
+        </text>
+      </box>
     </box>
   )
 }
@@ -1569,6 +1936,30 @@ export interface ApplicationGroupView {
   readonly databases: readonly DatabaseStatusPayload[]
   /** The same applications, split by environment, in first-seen order. */
   readonly environments: readonly ApplicationEnvironmentView[]
+  /**
+   * Whether each environment's name is printed above its rows.
+   *
+   * True whenever the project defines more than one environment, even if only
+   * one currently has rows — otherwise a project with `production` and
+   * `staging` but apps in only one would show the lone group unlabelled. Kept
+   * here rather than derived at render time because only the payload knows the
+   * project's full environment inventory.
+   */
+  readonly showEnvironments: boolean
+}
+
+/**
+ * Whether a section labels its environment groups.
+ *
+ * The project's inventory is the authority, so a multi-environment project is
+ * labelled even when just one has apps. A config that maps apps across several
+ * environments still labels when the inventory could not be read.
+ */
+export function shouldLabelEnvironments(
+  groups: readonly ApplicationEnvironmentView[],
+  knownEnvironments: readonly string[] | undefined,
+): boolean {
+  return (knownEnvironments?.length ?? 0) > 1 || groups.length > 1
 }
 
 /**
@@ -1624,22 +2015,26 @@ export function applicationGroups(payload: ApplicationsPayload | undefined): rea
   if (projects.length > 1) {
     return projects.map((project) => {
       const heading = projectGroupHeading(project)
+      const environments = environmentGroups(project.apps)
       return {
         ...(heading === undefined ? {} : { heading }),
         configFile: project.configFile,
         apps: project.apps,
         databases: project.databases ?? [],
-        environments: environmentGroups(project.apps),
+        environments,
+        showEnvironments: shouldLabelEnvironments(environments, project.environments),
       }
     })
   }
   const apps = payload?.apps ?? []
+  const environments = environmentGroups(apps)
   return [
     {
       ...(payload?.configFile === undefined ? {} : { configFile: payload.configFile }),
       apps,
       databases: payload?.databases ?? [],
-      environments: environmentGroups(apps),
+      environments,
+      showEnvironments: shouldLabelEnvironments(environments, payload?.environments),
     },
   ]
 }
