@@ -307,6 +307,153 @@ describe("applications payload", () => {
     expect((await invalid.handlers.applications({ scope: "mapped", directory })).refreshSeconds).toBe(25)
     await invalid.cleanup()
   })
+
+  it("answers a second caller from cache without another Coolify fan-out", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_1" } } }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "web" } },
+      ],
+    })
+
+    await h.handlers.applications({ scope: "mapped", directory })
+    const afterFirst = h.calls.length
+    // A second session polling the same project must not repeat the fan-out.
+    await h.handlers.applications({ scope: "mapped", directory })
+
+    expect(h.calls.length).toBe(afterFirst)
+    await h.cleanup()
+  })
+
+  it("rebuilds on a fresh request even inside the window", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_1" } } }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "web" } },
+      ],
+    })
+
+    await h.handlers.applications({ scope: "mapped", directory })
+    const afterFirst = h.calls.length
+    // An event-driven or manual refresh is exactly when the cache must yield.
+    // Nudge the clock past the one-second coalescing floor first, so this proves
+    // the fresh path and not merely a different cache condition.
+    const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2_000)
+    try {
+      await h.handlers.applications({ scope: "mapped", directory, fresh: true })
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(h.calls.length).toBeGreaterThan(afterFirst)
+    await h.cleanup()
+  })
+
+  it("rebuilds once the cadence has lapsed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_1" } } }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      options: { refreshSeconds: 5 },
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "web" } },
+      ],
+    })
+
+    await h.handlers.applications({ scope: "mapped", directory })
+    const afterFirst = h.calls.length
+    const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6_000)
+    try {
+      await h.handlers.applications({ scope: "mapped", directory })
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(h.calls.length).toBeGreaterThan(afterFirst)
+    await h.cleanup()
+  })
+
+  it("keeps a worktree's state separate from the main checkout's", async () => {
+    const main = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    const worktree = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await writeFile(
+      join(main, "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_main" } } }),
+      "utf8",
+    )
+    await writeFile(
+      join(worktree, "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_wt" } } }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_main", status: 200, body: { uuid: "app_main", name: "main" } },
+        { method: "GET", path: "/applications/app_wt", status: 200, body: { uuid: "app_wt", name: "wt" } },
+      ],
+    })
+
+    const first = await h.handlers.applications({ scope: "mapped", directory: main })
+    const second = await h.handlers.applications({ scope: "mapped", directory: worktree })
+
+    // The directory is part of the cache key, so neither is served the other's.
+    expect(first.apps.map((app: any) => app.name)).toEqual(["main"])
+    expect(second.apps.map((app: any) => app.name)).toEqual(["wt"])
+    await h.cleanup()
+  })
+
+  it("re-reads after coolify.json changes instead of serving the old mapping", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "coolify-idx-"))
+    await mkdir(join(directory, ".git"), { recursive: true })
+    await writeFile(
+      join(directory, "coolify.json"),
+      JSON.stringify({ applications: { web: { applicationUUID: "app_1" } } }),
+      "utf8",
+    )
+    const h = await harness({
+      token: TOKEN,
+      routes: [
+        ...ROOT_PROBES,
+        { method: "GET", path: "/applications/app_1", status: 200, body: { uuid: "app_1", name: "one" } },
+        { method: "GET", path: "/applications/app_2", status: 200, body: { uuid: "app_2", name: "two" } },
+      ],
+    })
+
+    const before = await h.handlers.applications({ scope: "mapped", directory })
+    expect(before.apps.map((app: any) => app.name)).toEqual(["one"])
+
+    // Writing the mapping invalidates every cached payload; a non-fresh read
+    // right after must already see the new application.
+    await h.handlers.writeProjectJson({
+      directory,
+      content: JSON.stringify({ applications: { web: { applicationUUID: "app_2" } } }),
+    })
+    const after = await h.handlers.applications({ scope: "mapped", directory })
+
+    expect(after.apps.map((app: any) => app.name)).toEqual(["two"])
+    await h.cleanup()
+  })
 })
 
 describe("recursiveProjects toggle", () => {

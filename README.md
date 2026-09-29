@@ -82,6 +82,20 @@ apps — so a repository that maps the same application per environment stays
 readable. Clicking a row offers Deploy, Logs, Restart and Roll back, plus a
 model-driven setup path for a project that is not configured yet.
 
+The list follows the height of the terminal: as many application and database
+rows as fit are shown, and the rest collapse behind a `+N more · show all` line
+that opens the full project list. Applications and databases draw from the same
+budget, so a tall terminal lists everything the server sent while a short one
+keeps the affordance visible.
+
+Sidebar state is cached per project directory and shared by every session in a
+workspace, so switching sessions — or re-opening the sidebar — reuses the last
+read instead of re-asking Coolify. The cache is keyed on the working directory
+as well as the instance endpoint, so a worktree with its own `coolify.json` is
+never shown its main checkout's state. A deployment in flight, a manual refresh,
+and a written or linked `coolify.json` all bypass the cache so a change is never
+hidden behind it.
+
 **Deploy** triggers the build directly and streams Coolify's own deployment log
 into a scrolling panel, so no model turn is spent and progress is visible as it
 happens. A failed deployment offers a read-only session that opens knowing the
@@ -97,11 +111,12 @@ Below the applications, a **databases** section lists the project's databases
 with the same status light, each followed by its Coolify environment in muted
 grey when it can be determined. Clicking one offers Restart, Start and Stop; a
 start or restart spins like an application restart until the container
-settles, while a stop is not followed by a spinner. Rows come from two sources,
-merged and de-duplicated by UUID: the config's `databases` map (which supplies
-the key, name and path scope) and every database whose `environment_id` belongs
-to the project — the only project attribution the Coolify API exposes, so a
-database created in the Coolify UI is still shown.
+settles, while a stop is not followed by a spinner. When the section is
+truncated, `+N more · show all` opens the full database list. Rows come from two
+sources, merged and de-duplicated by UUID: the config's `databases` map (which
+supplies the key, name and path scope) and every database whose
+`environment_id` belongs to the project — the only project attribution the
+Coolify API exposes, so a database created in the Coolify UI is still shown.
 
 **Configure** is the entry point for linking a project and for fixing the
 instance, so it is hidden once the instance answers *and* the project is

@@ -2,6 +2,7 @@
 import type { Integration } from "@opencode/plugin"
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import type { KeymapLayer } from "@opencode/plugin/tui/context"
+import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { normalizeDeploymentStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import { runtimeTone, type RuntimeTone } from "@skyvence/coolify-oc-shared/coolify/runtime"
@@ -30,8 +31,19 @@ const INTEGRATION_ID = "coolify" as Integration.ID
  * `1 << 0`.
  */
 const BOLD = 1
-/** How many application rows the sidebar shows before it stops. */
-const MAX_ROWS = 4
+/**
+ * Rows the sidebar spends above the first resource row: the host's sidebar
+ * title and footer, the sidebar's own padding, this plugin's header (title,
+ * instance, project) and the border above the list. The body budget is the
+ * terminal height minus this, so a short terminal collapses to the `show all`
+ * affordances while a tall one lists everything the server sent.
+ *
+ * An estimate, not a measurement: the host's slot API publishes no height for
+ * `sidebar.content`, so the terminal height is the closest available signal.
+ */
+export const SIDEBAR_CHROME_ROWS = 10
+/** Even a one-line terminal keeps room for one row and its affordance. */
+export const MIN_BODY_ROWS = 1
 /**
  * Refresh cadence. Idle polling only exists to catch container drift that no
  * event announces; while a deployment is running the sidebar follows it closely.
@@ -99,6 +111,37 @@ interface SidebarControls {
 }
 
 /**
+ * The last `applications` payload for one project directory.
+ *
+ * Held by the plugin rather than by a sidebar instance, so every session shares
+ * it: a sidebar re-mounted by a session switch reuses the previous payload
+ * instead of re-asking the server and resetting its countdown. Keyed by
+ * directory, because that is what selects `coolify.json`, so a worktree keeps
+ * its own entry and can never be shown its main checkout's state.
+ */
+export interface CachedApplications {
+  readonly at: number
+  readonly payload: ApplicationsPayload
+}
+
+/**
+ * The cached payload for a directory and the seconds left before it lapses, or
+ * `undefined` when there is none or it has aged past the payload's own cadence.
+ */
+export function readCachedApplications(
+  cache: ReadonlyMap<string, CachedApplications>,
+  key: string,
+  now: number,
+): { readonly entry: CachedApplications; readonly remainingSeconds: number } | undefined {
+  const entry = cache.get(key)
+  if (!entry) return undefined
+  const ttl = entry.payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
+  const elapsed = (now - entry.at) / 1_000
+  if (elapsed >= ttl) return undefined
+  return { entry, remainingSeconds: Math.max(1, Math.round(ttl - elapsed)) }
+}
+
+/**
  * The setup context, threaded into components instead of read with `usePlugin`.
  *
  * `usePlugin` looks the host's context up through Solid's `useContext`. The
@@ -122,10 +165,27 @@ export default Plugin.define({
      */
     let sidebarControls: SidebarControls | undefined
     /**
-     * "Show all" gets clicked repeatedly, and the project list changes far less
-     * often than the mapped one, so a short cache avoids a round trip per click.
+     * The show-all dialogs get clicked repeatedly, and the project list changes
+     * far less often than the mapped one, so a short cache avoids a round trip
+     * per click. Applications and databases share it, so opening one dialog
+     * after the other costs a single request.
      */
-    let allAppsCache: { at: number; directory: string | undefined; apps: readonly AppStatusPayload[] } | undefined
+    let projectInventoryCache:
+      | {
+          at: number
+          directory: string | undefined
+          apps: readonly AppStatusPayload[]
+          databases: readonly DatabaseStatusPayload[]
+        }
+      | undefined
+    /**
+     * The last mapped payload per project directory, shared by every session's
+     * sidebar. A re-mounted sidebar reuses it until the cadence lapses, so it
+     * neither re-asks the server nor resets its countdown. The directory is the
+     * key because it decides which `coolify.json` applies, so a worktree has
+     * its own entry.
+     */
+    const sidebarCache = new Map<string, CachedApplications>()
     /**
      * Directories whose model-driven linking has already been attempted.
      *
@@ -700,31 +760,46 @@ export default Plugin.define({
     }
 
     /**
+     * The project's full application and database inventory, read through the
+     * `project` scope and cached briefly for the show-all dialogs.
+     */
+    async function projectInventory(
+      directory: string | undefined,
+      label: string,
+    ): Promise<{ apps: readonly AppStatusPayload[]; databases: readonly DatabaseStatusPayload[] } | undefined> {
+      const INVENTORY_TTL_MS = 10_000
+      const cached =
+        projectInventoryCache &&
+        projectInventoryCache.directory === directory &&
+        Date.now() - projectInventoryCache.at < INVENTORY_TTL_MS
+      if (cached) return projectInventoryCache
+
+      sidebarControls?.setBusy(true)
+      try {
+        const data = (await callRpc(rpc.applications, { scope: "project", directory }, directory)) as ApplicationsPayload
+        projectInventoryCache = {
+          at: Date.now(),
+          directory,
+          apps: data.apps ?? [],
+          databases: data.databases ?? [],
+        }
+        return projectInventoryCache
+      } catch (cause) {
+        toast(`Could not list ${label}: ${message(cause)}`, "error")
+        return undefined
+      } finally {
+        sidebarControls?.setBusy(false)
+      }
+    }
+
+    /**
      * Every application in the project, for when the sidebar list is truncated
      * or an app is not linked to this repository yet.
      */
     async function openAllApps(directory: string | undefined): Promise<void> {
-      const ALL_APPS_TTL_MS = 10_000
-      let apps: readonly AppStatusPayload[]
-
-      sidebarControls?.setBusy(true)
-      try {
-        const cached =
-          allAppsCache && allAppsCache.directory === directory && Date.now() - allAppsCache.at < ALL_APPS_TTL_MS
-        if (cached) {
-          apps = allAppsCache!.apps
-        } else {
-          const data = (await callRpc(rpc.applications, { scope: "project", directory }, directory)) as ApplicationsPayload
-          apps = data.apps ?? []
-          allAppsCache = { at: Date.now(), directory, apps }
-        }
-      } catch (cause) {
-        toast(`Could not list applications: ${message(cause)}`, "error")
-        return
-      } finally {
-        sidebarControls?.setBusy(false)
-      }
-
+      const inventory = await projectInventory(directory, "applications")
+      if (!inventory) return
+      const { apps } = inventory
       if (apps.length === 0) {
         toast("No applications in this project.", "warning")
         return
@@ -740,6 +815,31 @@ export default Plugin.define({
       if (!chosen) return
       const app = apps.find((entry) => entry.applicationUUID === chosen)
       if (app) await openAppActions(app)
+    }
+
+    /**
+     * Every database in the project, for when the sidebar list is truncated or
+     * a database was created in the Coolify UI rather than the config.
+     */
+    async function openAllDatabases(directory: string | undefined): Promise<void> {
+      const inventory = await projectInventory(directory, "databases")
+      if (!inventory) return
+      const { databases } = inventory
+      if (databases.length === 0) {
+        toast("No databases in this project.", "warning")
+        return
+      }
+      const chosen = await context.ui.dialog.select<string>({
+        title: "Databases in this project",
+        options: databases.map((database) => ({
+          title: database.name,
+          value: database.databaseUUID ?? database.key,
+          description: [database.type, database.environment, database.path].filter(Boolean).join("  "),
+        })),
+      })
+      if (!chosen) return
+      const database = databases.find((entry) => (entry.databaseUUID ?? entry.key) === chosen)
+      if (database) await openDatabaseActions(database)
     }
 
     // --- Commands -----------------------------------------------------------
@@ -781,9 +881,11 @@ export default Plugin.define({
         <CoolifySidebar
           context={context}
           sessionID={input.sessionID}
+          cache={sidebarCache}
           onAppActions={openAppActions}
           onDatabaseActions={openDatabaseActions}
           onAllApps={() => openAllApps(sessionDirectory())}
+          onAllDatabases={() => openAllDatabases(sessionDirectory())}
           onConfigure={() => void openConfigure(sessionDirectory())}
           onLinkFirst={() => linkFirst(sessionDirectory())}
           onReady={(controls) => {
@@ -806,9 +908,12 @@ export default Plugin.define({
 function CoolifySidebar(props: {
   context: PluginContext
   sessionID: string
+  /** Shared across sessions, so a re-mounted sidebar finds the last payload. */
+  cache: Map<string, CachedApplications>
   onAppActions: (app: AppStatusPayload) => Promise<void>
   onDatabaseActions: (database: DatabaseStatusPayload) => Promise<void>
   onAllApps: () => Promise<void>
+  onAllDatabases: () => Promise<void>
   onConfigure: () => void
   onLinkFirst: () => Promise<void>
   onReady: (controls: SidebarControls) => void
@@ -833,15 +938,17 @@ function CoolifySidebar(props: {
   let previousRows: readonly AppStatusPayload[] = []
   let previousDatabaseRows: readonly DatabaseStatusPayload[] = []
 
-  // `rows` feeds the countdown's active-deployment check; grouping only
-  // affects what is drawn, not when the sidebar refreshes.
-  const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
   const idleSeconds = (): number => data()?.refreshSeconds ?? REFRESH_SECONDS_IDLE
   const isStarting = (app: AppStatusPayload): boolean =>
     starting().some((entry) => entry.id === app.applicationUUID)
   const isDatabaseStarting = (database: DatabaseStatusPayload): boolean =>
     startingDatabases().some((entry) => entry.id === database.databaseUUID)
-  const groups = createMemo(() => applicationGroups(data()))
+
+  // The terminal height is reactive, so a resize re-plans how many rows fit.
+  // Applications and databases draw from the same budget, in render order.
+  const dimensions = useTerminalDimensions()
+  const budget = createMemo(() => sidebarRowBudget(dimensions().height))
+  const planned = createMemo(() => planSidebarRows(applicationGroups(data()), budget()))
   const configureVisible = createMemo(() => shouldShowConfigure(data()))
 
   /**
@@ -862,11 +969,69 @@ function CoolifySidebar(props: {
   }
 
   /**
+   * Fold a payload into the sidebar's signals and report the cadence it asks
+   * for. Shared by a fresh fetch and a cache hit, so both reconcile the restart
+   * trackers and land the same way.
+   */
+  const applyPayload = (payload: ApplicationsPayload): number => {
+    const nextRows = payload.apps ?? []
+    const nextDatabaseRows = payload.databases ?? []
+    const now = Date.now()
+    const cadence = payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
+    const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, now, STARTING_TIMEOUT_MS)
+    const nextStartingDatabases = reconcileStartingDatabases(
+      startingDatabases(),
+      previousDatabaseRows,
+      nextDatabaseRows,
+      now,
+      STARTING_TIMEOUT_MS,
+    )
+    previousRows = nextRows
+    previousDatabaseRows = nextDatabaseRows
+    setStarting(nextStarting)
+    setStartingDatabases(nextStartingDatabases)
+    setData(payload)
+    setFailed(false)
+    return refreshSeconds(nextRows, cadence, nextStarting, nextStartingDatabases)
+  }
+
+  /**
+   * Whether a deployment or restart is in flight, in which case even a timed
+   * poll asks for fresh data: the point of the active cadence is to watch the
+   * container come back, which a cached payload would hide.
+   */
+  const isPollingActive = (): boolean =>
+    starting().length > 0 ||
+    startingDatabases().length > 0 ||
+    (data()?.apps ?? []).some(isStartingSignal) ||
+    (data()?.databases ?? []).some(isDatabaseStartingSignal)
+
+  /**
    * Coalesced: concurrent callers share one request. During a deployment the
    * server emits progress every few seconds, and without this each event would
    * start its own round trip.
+   *
+   * A re-mounted sidebar checks the plugin-wide cache first, so a session switch
+   * within the cadence neither re-asks the server nor resets the countdown.
+   * `fresh` skips that cache; the event listeners and the manual refresh pass it
+   * because their whole purpose is to observe something the cache would hide.
    */
-  const load = (): Promise<void> => {
+  const load = (fresh = false): Promise<void> => {
+    const base = directory()
+    setNoDirectory(base === undefined)
+    const key = base ?? ""
+
+    if (!fresh && !isPollingActive()) {
+      const hit = readCachedApplications(props.cache, key, Date.now())
+      if (hit) {
+        const cadence = applyPayload(hit.entry.payload)
+        // The payload may have been captured mid-deploy, so the active cadence
+        // can be sooner than the entry's remaining life.
+        setRemaining(Math.min(hit.remainingSeconds, cadence))
+        return Promise.resolve()
+      }
+    }
+
     if (inFlight) return inFlight
     setBusy(true)
     let cadence = idleSeconds()
@@ -875,31 +1040,13 @@ function CoolifySidebar(props: {
         // The RPC `location` option is not honoured, so the directory travels in
         // the input instead. Without it the server answers for its own default
         // location and a freshly mapped project shows nothing.
-        const base = directory()
-        setNoDirectory(base === undefined)
         const payload = (await callRpc(rpc.applications, {
           scope: "mapped",
           ...(base === undefined ? {} : { directory: base }),
+          ...(fresh ? { fresh: true } : {}),
         }, base)) as ApplicationsPayload
-        const nextRows = payload.apps ?? []
-        const nextDatabaseRows = payload.databases ?? []
-        cadence = payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
-        const now = Date.now()
-        const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, now, STARTING_TIMEOUT_MS)
-        const nextStartingDatabases = reconcileStartingDatabases(
-          startingDatabases(),
-          previousDatabaseRows,
-          nextDatabaseRows,
-          now,
-          STARTING_TIMEOUT_MS,
-        )
-        previousRows = nextRows
-        previousDatabaseRows = nextDatabaseRows
-        setStarting(nextStarting)
-        setStartingDatabases(nextStartingDatabases)
-        setData(payload)
-        setFailed(false)
-        cadence = refreshSeconds(nextRows, cadence, nextStarting, nextStartingDatabases)
+        cadence = applyPayload(payload)
+        props.cache.set(key, { at: Date.now(), payload })
       } catch {
         setFailed(true)
       } finally {
@@ -920,14 +1067,14 @@ function CoolifySidebar(props: {
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(() => {
       debounce = undefined
-      void load()
+      void load(true)
     }, delayMs)
   }
 
   onMount(() => {
     void load()
     props.onReady({
-      refresh: () => void load(),
+      refresh: () => void load(true),
       markStarting: (applicationUUID) =>
         setStarting((existing) => markStartingUp(existing, applicationUUID, Date.now())),
       markStartingDatabase: (databaseUUID) =>
@@ -969,7 +1116,7 @@ function CoolifySidebar(props: {
       {/* Title: instance, then the working directory it is answering for. The
           directory is on screen because a wrong project is otherwise invisible,
           which is exactly how a shared-state bug hides. */}
-      <box flexDirection="row" gap={1} onMouseUp={() => void load()}>
+      <box flexDirection="row" gap={1} onMouseUp={() => void load(true)}>
         <text attributes={BOLD} fg={theme().base} flexShrink={0}>
           Coolify
         </text>
@@ -1006,7 +1153,7 @@ function CoolifySidebar(props: {
       {/* Applications, then databases: status light, name, state. One section
           per config. */}
       <box border={["top"]} borderColor={theme().muted} flexDirection="column">
-        <For each={groups()}>
+        <For each={planned()}>
           {(group, groupIndex) => (
             <box flexDirection="column">
               <Show when={group.heading}>
@@ -1028,7 +1175,7 @@ function CoolifySidebar(props: {
                       </text>
                     </Show>
 
-                    <For each={environment.apps.slice(0, MAX_ROWS)}>
+                    <For each={environment.apps}>
                       {(app, index) => {
                         // Each section owns its rows, so hover is keyed per group.
                         const key = `${groupIndex()}:${envIndex()}:${index()}`
@@ -1063,18 +1210,18 @@ function CoolifySidebar(props: {
                 )}
               </For>
 
-              <Show when={group.apps.length > MAX_ROWS}>
+              <Show when={group.hiddenApps > 0}>
                 <box flexDirection="row" gap={1} onMouseUp={() => void props.onAllApps()}>
                   <Show when={busy()}>
                     <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
                   </Show>
                   <text fg={theme().muted} wrapMode="none" truncate>
-                    {busy() ? "loading…" : `+${group.apps.length - MAX_ROWS} more · show all`}
+                    {busy() ? "loading…" : `+${group.hiddenApps} more · show all`}
                   </text>
                 </box>
               </Show>
 
-              <Show when={!failed() && data()?.connected && group.apps.length === 0}>
+              <Show when={!failed() && data()?.connected && group.appCount === 0}>
                 <box flexDirection="row" gap={1}>
                   <text fg={theme().muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {group.configFile ? "not deployed" : "not deployed · no coolify.json"}
@@ -1095,12 +1242,12 @@ function CoolifySidebar(props: {
               {/* Databases live in their own section below the applications.
                   They are attributed through the project's environment ids,
                   since the API does not report a database's project directly. */}
-              <Show when={group.databases.length > 0}>
+              <Show when={group.databaseCount > 0}>
                 <box flexDirection="column">
                   <text fg={theme().muted} wrapMode="none" truncate>
                     databases
                   </text>
-                  <For each={group.databases.slice(0, MAX_ROWS)}>
+                  <For each={group.databases}>
                     {(database, index) => {
                       const key = `db:${groupIndex()}:${index()}`
                       return (
@@ -1146,10 +1293,15 @@ function CoolifySidebar(props: {
                       )
                     }}
                   </For>
-                  <Show when={group.databases.length > MAX_ROWS}>
-                    <text fg={theme().muted} wrapMode="none" truncate>
-                      {`+${group.databases.length - MAX_ROWS} more`}
-                    </text>
+                  <Show when={group.hiddenDatabases > 0}>
+                    <box flexDirection="row" gap={1} onMouseUp={() => void props.onAllDatabases()}>
+                      <Show when={busy()}>
+                        <text fg={theme().feedback.info?.base ?? theme().base}>{SPINNER[frame() % SPINNER.length]}</text>
+                      </Show>
+                      <text fg={theme().muted} wrapMode="none" truncate>
+                        {busy() ? "loading…" : `+${group.hiddenDatabases} more · show all`}
+                      </text>
+                    </box>
                   </Show>
                 </box>
               </Show>
@@ -2037,6 +2189,94 @@ export function applicationGroups(payload: ApplicationsPayload | undefined): rea
       showEnvironments: shouldLabelEnvironments(environments, payload?.environments),
     },
   ]
+}
+
+/**
+ * How many application and database rows the body may show, from the terminal
+ * height.
+ *
+ * The affordance lines (`+N more · show all`) are deliberately not counted:
+ * they are the way back to the hidden rows and must never be squeezed out.
+ */
+export function sidebarRowBudget(terminalHeight: number): number {
+  return Math.max(MIN_BODY_ROWS, Math.floor(terminalHeight) - SIDEBAR_CHROME_ROWS)
+}
+
+/** One environment's visible applications after the budget is applied. */
+export interface PlannedEnvironment {
+  /** The Coolify environment name, absent when the application reported none. */
+  readonly environment?: string
+  readonly apps: readonly AppStatusPayload[]
+}
+
+/**
+ * A group after the shared row budget is applied: the rows that fit, and how
+ * many each section had to leave out.
+ */
+export interface PlannedGroup {
+  /** Shown only when the payload carries more than one config. */
+  readonly heading?: string
+  readonly configFile?: string
+  readonly showEnvironments: boolean
+  readonly environments: readonly PlannedEnvironment[]
+  /** Databases that fit, in map order. */
+  readonly databases: readonly DatabaseStatusPayload[]
+  /** Applications in the group, before the budget. */
+  readonly appCount: number
+  /** Databases in the group, before the budget. */
+  readonly databaseCount: number
+  /** Applications the budget could not fit. */
+  readonly hiddenApps: number
+  /** Databases the budget could not fit. */
+  readonly hiddenDatabases: number
+}
+
+/**
+ * Apply one row budget across every group, in render order.
+ *
+ * Applications and databases draw from the same pool, so a project with many
+ * databases leaves less room for applications and vice versa. Headings and
+ * environment labels are free — one line each, and they identify the rows that
+ * follow — while a truncation notice is rendered outside the budget, since it
+ * is the way back to the hidden rows.
+ */
+export function planSidebarRows(
+  groups: readonly ApplicationGroupView[],
+  budget: number,
+): readonly PlannedGroup[] {
+  let remaining = Math.max(0, Math.floor(budget))
+  const planned: PlannedGroup[] = []
+
+  for (const group of groups) {
+    const environments: PlannedEnvironment[] = []
+    let hiddenApps = 0
+    for (const environment of group.environments) {
+      const visible = environment.apps.slice(0, remaining)
+      remaining -= visible.length
+      hiddenApps += environment.apps.length - visible.length
+      environments.push({
+        ...(environment.environment === undefined ? {} : { environment: environment.environment }),
+        apps: visible,
+      })
+    }
+
+    const databases = group.databases.slice(0, remaining)
+    remaining -= databases.length
+
+    planned.push({
+      ...(group.heading === undefined ? {} : { heading: group.heading }),
+      ...(group.configFile === undefined ? {} : { configFile: group.configFile }),
+      showEnvironments: group.showEnvironments,
+      environments,
+      databases,
+      appCount: group.apps.length,
+      databaseCount: group.databases.length,
+      hiddenApps,
+      hiddenDatabases: group.databases.length - databases.length,
+    })
+  }
+
+  return planned
 }
 
 export function appRowTone(app: AppStatusPayload): LineTone {

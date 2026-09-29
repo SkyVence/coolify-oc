@@ -111,6 +111,9 @@ export default Plugin.define({
       if (normalizedEndpoint === previous) return
       client = undefined
       capabilities = undefined
+      // A different instance answers for a different endpoint, so every cached
+      // payload belongs to the old one.
+      invalidateApplications()
     }
 
     /** How long a capability report is trusted without a fresh probe. */
@@ -124,6 +127,36 @@ export default Plugin.define({
     let credentialPresent = false
     /** In-flight probe, so concurrent refreshes share one burst. */
     let refreshing: Promise<void> | undefined
+
+    /**
+     * Recently built `applications` payloads.
+     *
+     * Each payload fans out into many Coolify calls — one per application, one
+     * per project environment, plus the database lookups. Every open sidebar
+     * asking for the same project used to pay that fan-out again on each poll
+     * and on each re-mount, which multiplied the load by the number of sessions.
+     * One entry per endpoint, scope and directory turns that back into a single
+     * burst per refresh interval.
+     *
+     * The directory is part of the key on purpose: it is what selects the
+     * `coolify.json`, so two checkouts of the same repository — including a
+     * worktree — can never be served each other's state.
+     */
+    const applicationsCache = new Map<string, { at: number; payload: ApplicationsPayload }>()
+    /** Builds in flight, so concurrent callers sharing a key share one fan-out. */
+    const applicationsInFlight = new Map<string, Promise<ApplicationsPayload>>()
+    /**
+     * Even a `fresh` request reuses a payload this young. Several sessions'
+     * sidebars all hear one deployment event and ask at once; without this each
+     * would start its own fan-out. A second is short enough that no observer can
+     * tell the answer came from cache.
+     */
+    const FRESH_COALESCE_MS = 1_000
+
+    /** Drop every cached payload; the next read rebuilds from Coolify. */
+    function invalidateApplications(): void {
+      applicationsCache.clear()
+    }
 
     // --- Integration: declare the integration and its API-key method ---------
     const integrationRegistration = await ctx.integration.transform((editor) => {
@@ -212,6 +245,7 @@ export default Plugin.define({
         normalizedEndpoint = normalized
         settings = { ...settings, endpoint: raw.trim() }
         await writeSettings(store, settings)
+        invalidateApplications()
         await refresh("setEndpoint")
         await ctx.tool.reload()
         emitCapabilities()
@@ -297,8 +331,8 @@ export default Plugin.define({
       },
 
       applications: async (input) => {
-        const payload = input as { scope?: string; directory?: string } | undefined
-        return applicationsPayload(payload?.scope, payload?.directory)
+        const payload = input as { scope?: string; directory?: string; fresh?: boolean } | undefined
+        return applicationsPayload(payload?.scope, payload?.directory, payload?.fresh === true)
       },
 
       configureProject: async (input) => configureProjectPayload(input as Record<string, unknown> | undefined),
@@ -438,6 +472,9 @@ export default Plugin.define({
           if (event.type !== "credential.updated" && event.type !== "credential.switched") continue
           // Setting a token fires this, plus the TUI's own refresh call; the
           // force flag means whichever arrives first is the authoritative probe.
+          // A different token can reach a different team or expose different
+          // abilities, so any cached payloads no longer describe this instance.
+          invalidateApplications()
           await refresh(`event:${event.type}`, true)
           await ctx.tool.reload()
           emitCapabilities()
@@ -470,6 +507,9 @@ export default Plugin.define({
         getLink: () => link,
         setLink: async (next: ResolvedLink | undefined) => {
           link = next
+          // The link is what a config-less project falls back to, so a cached
+          // payload for any directory may now be wrong.
+          invalidateApplications()
           if (next) await writeLink(store, projectID, next)
           else await clearLink(store, projectID)
           await ctx.tool.reload()
@@ -611,8 +651,18 @@ export default Plugin.define({
     /**
      * The panel's data source: the applications this repository maps, each with
      * its live container state, or every application in the project.
+     *
+     * Wrapped in a short-lived cache keyed by endpoint, scope and directory, so
+     * several sessions polling the same project share one fan-out instead of
+     * each paying for it. A `fresh` request — an event-driven or manual refresh —
+     * always rebuilds, because the point of those is to observe a change the
+     * cache would otherwise hide.
      */
-    async function applicationsPayload(scope: string | undefined, directory?: string): Promise<ApplicationsPayload> {
+    async function applicationsPayload(
+      scope: string | undefined,
+      directory?: string,
+      fresh = false,
+    ): Promise<ApplicationsPayload> {
       const mode: "mapped" | "project" = scope === "project" ? "project" : "mapped"
       await syncEndpoint()
       // An endpoint that appeared since this instance started has no client yet,
@@ -635,12 +685,49 @@ export default Plugin.define({
           message: "No project directory was supplied, so the sidebar cannot know which project to show.",
         }
       }
+
+      // The directory is part of the key because it decides which `coolify.json`
+      // applies: a worktree must never be answered with its main checkout's
+      // state. The scope and recursion flag change the payload's shape, and the
+      // endpoint changes which instance it describes.
+      const key = [client.endpoint, mode, recursiveProjects ? "recursive" : "flat", base].join("\n")
+      const cached = applicationsCache.get(key)
+      if (cached) {
+        const age = Date.now() - cached.at
+        if (age < FRESH_COALESCE_MS || (!fresh && age < refreshSeconds * 1_000)) return cached.payload
+      }
+      // Concurrent callers — several sidebars reacting to the same event — wait
+      // on the build already running rather than starting another fan-out.
+      const inFlight = applicationsInFlight.get(key)
+      if (inFlight) return inFlight
+
+      const build = buildApplicationsPayload(mode, base)
+        .then((payload) => {
+          applicationsCache.set(key, { at: Date.now(), payload })
+          return payload
+        })
+        .finally(() => {
+          applicationsInFlight.delete(key)
+        })
+      applicationsInFlight.set(key, build)
+      return build
+    }
+
+    /** Build a fresh payload from Coolify. The caching wrapper above calls this. */
+    async function buildApplicationsPayload(
+      mode: "mapped" | "project",
+      base: string,
+    ): Promise<ApplicationsPayload> {
+      // The wrapper only reaches here with a client in hand; capture it so the
+      // body below can stay free of non-null assertions.
+      const coolify = client
+      if (!coolify) throw new Error("applications payload built without a Coolify client")
       const config = await findProjectConfig(base)
       const apps: AppStatusPayload[] = []
 
       // Fetched at most once per payload, and only if a row actually needs it.
       let queuePromise: Promise<readonly CoolifyDeployment[]> | undefined
-      const queueOnce = () => (queuePromise ??= listDeployments(client!, undefined).catch(() => []))
+      const queueOnce = () => (queuePromise ??= listDeployments(coolify, undefined).catch(() => []))
 
       /**
        * The project's environments, read at most once per payload. The same list
@@ -652,7 +739,7 @@ export default Plugin.define({
       const projectEnvironments = (projectUUID: string): Promise<readonly CoolifyEnvironment[]> => {
         const cached = environmentCache.get(projectUUID)
         if (cached) return cached
-        const promise = listEnvironments(client!, projectUUID).catch(() => [] as CoolifyEnvironment[])
+        const promise = listEnvironments(coolify, projectUUID).catch(() => [] as CoolifyEnvironment[])
         environmentCache.set(projectUUID, promise)
         return promise
       }
@@ -695,7 +782,7 @@ export default Plugin.define({
         for (const environment of await projectEnvironments(projectUUID)) {
           const name = environment.name ?? environment.uuid
           if (!name) continue
-          const detail = await client!
+          const detail = await coolify
             .request<{ applications?: readonly { uuid?: string }[] }>({
               method: "GET",
               path: `/projects/${projectUUID}/${environment.uuid ?? environment.name}`,
@@ -716,8 +803,8 @@ export default Plugin.define({
         path: string | undefined,
         isSelected: boolean,
       ): Promise<void> => {
-        const application = await getApplication(client!, applicationUUID).catch(() => undefined)
-        const latest = await latestDeploymentFor(client!, applicationUUID, undefined, queueOnce).catch(
+        const application = await getApplication(coolify, applicationUUID).catch(() => undefined)
+        const latest = await latestDeploymentFor(coolify, applicationUUID, undefined, queueOnce).catch(
           () => undefined,
         )
         const environment = environmentByApplication?.get(applicationUUID) ?? application?.environment_name
@@ -778,7 +865,7 @@ export default Plugin.define({
        */
       let databaseListPromise: Promise<readonly CoolifyDatabase[]> | undefined
       const databaseListOnce = (): Promise<readonly CoolifyDatabase[]> =>
-        (databaseListPromise ??= listDatabases(client!).catch(() => [] as CoolifyDatabase[]))
+        (databaseListPromise ??= listDatabases(coolify).catch(() => [] as CoolifyDatabase[]))
 
       const databaseRow = async (
         key: string,
@@ -793,7 +880,7 @@ export default Plugin.define({
           )
           uuid = match?.uuid
         }
-        const database = uuid ? await getDatabase(client!, uuid).catch(() => undefined) : undefined
+        const database = uuid ? await getDatabase(coolify, uuid).catch(() => undefined) : undefined
         const type = database?.type ?? entry.type
         const environment =
           database?.environment_name ??
@@ -865,7 +952,7 @@ export default Plugin.define({
         environments = await projectEnvironmentNames(projectUUID)
         const members: { uuid: string; name: string }[] = []
         for (const environment of projectEnvironmentList) {
-          const detail = await client!
+          const detail = await coolify
             .request<{ applications?: readonly { uuid?: string; name?: string }[] }>({
               method: "GET",
               path: `/projects/${projectUUID}/${environment.uuid ?? environment.name}`,
@@ -927,7 +1014,7 @@ export default Plugin.define({
 
       return {
         connected: true,
-        endpoint: client.endpoint,
+        endpoint: coolify.endpoint,
         endpointConfigured: true,
         ...(projectUUID ? { projectUUID } : {}),
         ...(config?.environmentName ? { environmentName: config.environmentName } : {}),
@@ -1020,6 +1107,9 @@ export default Plugin.define({
     }
 
     function emitProjectChanged(file: string): void {
+      // The mapping on disk changed, so every cached payload that read it is
+      // stale regardless of its age.
+      invalidateApplications()
       void rpc.events.emit("project.changed", { file })
     }
 
@@ -1094,6 +1184,7 @@ export default Plugin.define({
 
     async function setLink(next: ResolvedLink | undefined): Promise<void> {
       link = next
+      invalidateApplications()
       if (next) await writeLink(store, projectID, next)
       else await clearLink(store, projectID)
       await ctx.tool.reload()

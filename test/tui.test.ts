@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
+  MIN_BODY_ROWS,
   READ_ONLY_PERMISSIONS,
+  SIDEBAR_CHROME_ROWS,
   STARTING_MIN_SPIN_MS,
   STARTING_TIMEOUT_MS,
   abbreviatePath,
@@ -17,11 +19,14 @@ import {
   isLinked,
   markStartingUp,
   parseCoolifyArgument,
+  planSidebarRows,
   projectGroupHeading,
+  readCachedApplications,
   reconcileStartingUp,
   reconcileStartingDatabases,
   refreshSeconds,
   shouldShowConfigure,
+  sidebarRowBudget,
   statusLight,
 } from "../packages/client/src/tui"
 
@@ -685,6 +690,131 @@ describe("applicationGroups", () => {
   })
 })
 
+describe("sidebarRowBudget", () => {
+  it("gives a tall terminal room for everything the server sends", () => {
+    expect(sidebarRowBudget(60)).toBe(60 - SIDEBAR_CHROME_ROWS)
+  })
+
+  it("shrinks the budget with the terminal", () => {
+    expect(sidebarRowBudget(SIDEBAR_CHROME_ROWS + 5)).toBe(5)
+  })
+
+  it("never drops below one row, even on a one-line terminal", () => {
+    expect(sidebarRowBudget(SIDEBAR_CHROME_ROWS)).toBe(MIN_BODY_ROWS)
+    expect(sidebarRowBudget(1)).toBe(MIN_BODY_ROWS)
+    expect(sidebarRowBudget(0)).toBe(MIN_BODY_ROWS)
+  })
+})
+
+describe("planSidebarRows", () => {
+  const app = (name: string, environment?: string) =>
+    ({ key: name, applicationUUID: `${name}_uuid`, name, ...(environment ? { environment } : {}) }) as any
+  const db = (name: string) => ({ key: name, databaseUUID: `${name}_uuid`, name }) as any
+  const group = (over: any = {}) =>
+    ({ apps: [], databases: [], environments: [], showEnvironments: false, ...over }) as any
+
+  it("shows every row when the budget covers them", () => {
+    const web = app("web")
+    const pg = db("pg")
+    const [planned] = planSidebarRows(
+      [group({ apps: [web], databases: [pg], environments: [{ apps: [web] }] })],
+      10,
+    )
+
+    expect(planned?.environments[0]?.apps).toEqual([web])
+    expect(planned?.databases).toEqual([pg])
+    expect(planned?.hiddenApps).toBe(0)
+    expect(planned?.hiddenDatabases).toBe(0)
+    expect(planned?.appCount).toBe(1)
+    expect(planned?.databaseCount).toBe(1)
+  })
+
+  it("spends one shared budget across applications and databases, in order", () => {
+    const web = app("web")
+    const api = app("api")
+    const pg = db("pg")
+    const redis = db("redis")
+    const [planned] = planSidebarRows(
+      [group({ apps: [web, api], databases: [pg, redis], environments: [{ apps: [web, api] }] })],
+      3,
+    )
+
+    // Two applications, then one database: the fourth row is hidden.
+    expect(planned?.environments[0]?.apps).toEqual([web, api])
+    expect(planned?.databases).toEqual([pg])
+    expect(planned?.hiddenApps).toBe(0)
+    expect(planned?.hiddenDatabases).toBe(1)
+  })
+
+  it("counts hidden applications across every environment in the group", () => {
+    const web = app("web", "production")
+    const api = app("api", "production")
+    const staging = app("web", "staging")
+    const [planned] = planSidebarRows(
+      [
+        group({
+          apps: [web, api, staging],
+          environments: [
+            { environment: "production", apps: [web, api] },
+            { environment: "staging", apps: [staging] },
+          ],
+          showEnvironments: true,
+        }),
+      ],
+      2,
+    )
+
+    expect(planned?.environments[0]?.apps).toEqual([web, api])
+    expect(planned?.environments[1]?.apps).toEqual([])
+    expect(planned?.hiddenApps).toBe(1)
+  })
+
+  it("hides a database when applications have spent the budget", () => {
+    const web = app("web")
+    const pg = db("pg")
+    const [planned] = planSidebarRows(
+      [group({ apps: [web], databases: [pg], environments: [{ apps: [web] }] })],
+      1,
+    )
+
+    expect(planned?.environments[0]?.apps).toEqual([web])
+    expect(planned?.databases).toEqual([])
+    expect(planned?.hiddenDatabases).toBe(1)
+  })
+
+  it("keeps the section totals even when the budget is zero", () => {
+    const web = app("web")
+    const pg = db("pg")
+    const [planned] = planSidebarRows(
+      [group({ apps: [web], databases: [pg], environments: [{ apps: [web] }] })],
+      0,
+    )
+
+    expect(planned?.environments[0]?.apps).toEqual([])
+    expect(planned?.databases).toEqual([])
+    expect(planned?.hiddenApps).toBe(1)
+    expect(planned?.hiddenDatabases).toBe(1)
+    expect(planned?.appCount).toBe(1)
+    expect(planned?.databaseCount).toBe(1)
+  })
+
+  it("spends the budget in group order", () => {
+    const a = app("a")
+    const b = app("b")
+    const planned = planSidebarRows(
+      [
+        group({ apps: [a], environments: [{ apps: [a] }] }),
+        group({ apps: [b], environments: [{ apps: [b] }] }),
+      ],
+      1,
+    )
+
+    expect(planned[0]?.environments[0]?.apps).toEqual([a])
+    expect(planned[1]?.environments[0]?.apps).toEqual([])
+    expect(planned[1]?.hiddenApps).toBe(1)
+  })
+})
+
 describe("database rows", () => {
   const database = (over: any) => ({ key: "postgres", name: "postgres", ...over })
 
@@ -918,5 +1048,53 @@ describe("parseCoolifyArgument", () => {
   it("reports a typo instead of quietly opening the picker", () => {
     expect(parseCoolifyArgument("instnace")).toBe("unknown")
     expect(parseCoolifyArgument("coolify wat")).toBe("unknown")
+  })
+})
+
+describe("applications cache", () => {
+  const entry = (at: number, refreshSeconds: number) => ({
+    at,
+    payload: { connected: true, refreshSeconds },
+  })
+
+  it("reports the seconds left on a fresh entry", () => {
+    const cache = new Map([["/p", entry(1_000, 25)]])
+    expect(readCachedApplications(cache, "/p", 5_000)?.remainingSeconds).toBe(21)
+  })
+
+  it("misses once the payload's own cadence has lapsed", () => {
+    const cache = new Map([["/p", entry(1_000, 25)]])
+    expect(readCachedApplications(cache, "/p", 26_000)).toBeUndefined()
+  })
+
+  it("misses a directory it has never seen", () => {
+    expect(readCachedApplications(new Map(), "/other", 1_000)).toBeUndefined()
+  })
+
+  it("falls back to the default cadence when the payload carries none", () => {
+    const cache = new Map([["/p", { at: 0, payload: { connected: true } }]])
+    // 25s default: still cached just before it, gone just after.
+    expect(readCachedApplications(cache, "/p", 24_000)).toBeDefined()
+    expect(readCachedApplications(cache, "/p", 26_000)).toBeUndefined()
+  })
+
+  it("keeps the full payload so the row budget can still count what it hides", () => {
+    const apps = Array.from({ length: 5 }, (_, index) => ({
+      key: `app_${index}`,
+      applicationUUID: `app_${index}`,
+      name: `app_${index}`,
+    }))
+    const cache = new Map([["/p", { at: 0, payload: { connected: true, refreshSeconds: 25, apps } }]])
+    const hit = readCachedApplications(cache, "/p", 1_000)
+    expect(hit).toBeDefined()
+
+    const [planned] = planSidebarRows(applicationGroups(hit!.entry.payload), 2)
+
+    // The cache stores every row; the budget decides how many of them fit. If a
+    // cached payload were ever truncated, `appCount` would undercount and the
+    // `+N more` affordance would lie.
+    expect(planned?.appCount).toBe(5)
+    expect(planned?.hiddenApps).toBe(3)
+    expect(planned?.environments[0]?.apps).toHaveLength(2)
   })
 })

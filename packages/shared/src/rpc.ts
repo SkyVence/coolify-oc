@@ -125,7 +125,7 @@ export const Coolify = Rpc.define({
       }),
     },
     applications: {
-      input: object({ scope: string, directory: string }),
+      input: object({ scope: string, directory: string, fresh: boolean }),
       output: object({
         connected: boolean,
         endpoint: string,
