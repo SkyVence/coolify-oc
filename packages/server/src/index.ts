@@ -19,6 +19,7 @@ import {
   stopApplication,
 } from "./coolify/resources"
 import { getApplication, listEnvironments } from "./coolify/resources"
+import { databaseRuntime, getDatabase, listDatabases, type CoolifyDatabase } from "./coolify/databases"
 import {
   describeError,
   granted,
@@ -29,6 +30,7 @@ import {
 import { parseApplicationStatus } from "@skyvence/coolify-oc-shared/coolify/runtime"
 import { parseRecursiveProjects, parseRefreshSeconds } from "@skyvence/coolify-oc-shared/options"
 import {
+  databasesFor,
   findAllProjectConfigs,
   findProjectConfig,
   findRepositoryRoot,
@@ -36,6 +38,7 @@ import {
   updateProjectConfig,
   validateProjectJson,
   type ProjectConfig,
+  type ProjectConfigDatabase,
 } from "./project-config"
 import { configFileFor } from "./tools/create"
 import { asApplicationMap, asDatabaseMap, nonEmpty } from "./tools/shared"
@@ -46,6 +49,7 @@ import {
   type ApplicationsProjectPayload,
   type AppStatusPayload,
   type CapabilitiesPayload,
+  type DatabaseStatusPayload,
 } from "@skyvence/coolify-oc-shared/rpc"
 import { resolveProject } from "./resolve"
 import { COOLIFY_SKILLS, skillPath } from "@skyvence/coolify-oc-shared/skills"
@@ -696,10 +700,94 @@ export default Plugin.define({
         return rows
       }
 
+      /**
+       * Databases the config maps, plus the databases the project owns.
+       *
+       * The config's `databases` map gives a stable key, a display name and a
+       * path scope, but the API exposes no project relation at all, so a
+       * database created in the Coolify UI is invisible to the sidebar through
+       * the config alone. `GET /databases` does carry `environment_id`, so the
+       * project's environment ids are used to discover the rest. Both sources
+       * are merged and de-duplicated by UUID; discovery is skipped silently
+       * when the environments (or their ids) cannot be read.
+       */
+      let databaseListPromise: Promise<readonly CoolifyDatabase[]> | undefined
+      const databaseListOnce = (): Promise<readonly CoolifyDatabase[]> =>
+        (databaseListPromise ??= listDatabases(client!).catch(() => [] as CoolifyDatabase[]))
+
+      const environmentIDCache = new Map<string, Promise<ReadonlySet<string>>>()
+      const projectEnvironmentIDs = (projectUUID: string): Promise<ReadonlySet<string>> => {
+        const cached = environmentIDCache.get(projectUUID)
+        if (cached) return cached
+        const promise = listEnvironments(client!, projectUUID)
+          .then((environments) => new Set(environments.flatMap((e) => (e.id === undefined ? [] : [String(e.id)]))))
+          .catch(() => new Set<string>())
+        environmentIDCache.set(projectUUID, promise)
+        return promise
+      }
+
+      const databaseRow = async (key: string, entry: ProjectConfigDatabase): Promise<DatabaseStatusPayload> => {
+        let uuid = entry.databaseUUID
+        if (!uuid) {
+          const wanted = (entry.name ?? key).trim().toLowerCase()
+          const match = (await databaseListOnce()).find(
+            (candidate) => (candidate.name ?? "").trim().toLowerCase() === wanted,
+          )
+          uuid = match?.uuid
+        }
+        const database = uuid ? await getDatabase(client!, uuid).catch(() => undefined) : undefined
+        const type = database?.type ?? entry.type
+        return {
+          key,
+          ...(uuid ? { databaseUUID: uuid } : {}),
+          name: database?.name ?? entry.name ?? key,
+          ...(type ? { type } : {}),
+          ...(entry.path ? { path: entry.path } : {}),
+          ...(database ? { runtime: databaseRuntime(database) } : {}),
+        }
+      }
+
+      const buildDatabaseRows = async (
+        projectConfig: ProjectConfig | undefined,
+        projectUUID: string | undefined,
+      ): Promise<DatabaseStatusPayload[]> => {
+        const rows: DatabaseStatusPayload[] = []
+        const covered = new Set<string>()
+
+        // Config-mapped first, so their key, name and path win.
+        const entries = projectConfig ? Object.entries(databasesFor(projectConfig, base)).slice(0, 12) : []
+        const mapped = await Promise.all(entries.map(([key, entry]) => databaseRow(key, entry)))
+        for (const row of mapped) {
+          rows.push(row)
+          if (row.databaseUUID) covered.add(row.databaseUUID)
+        }
+
+        // Then anything else the project owns.
+        const environmentIDs = projectUUID ? await projectEnvironmentIDs(projectUUID) : undefined
+        if (environmentIDs && environmentIDs.size > 0) {
+          for (const database of await databaseListOnce()) {
+            const environmentID = database.environment_id === undefined ? undefined : String(database.environment_id)
+            if (!environmentID || !environmentIDs.has(environmentID)) continue
+            if (!database.uuid || covered.has(database.uuid)) continue
+            covered.add(database.uuid)
+            rows.push({
+              key: databaseSlug(database.name ?? database.uuid),
+              databaseUUID: database.uuid,
+              name: database.name ?? database.uuid,
+              ...(database.type ? { type: database.type } : {}),
+              runtime: databaseRuntime(database),
+            })
+          }
+        }
+
+        return rows
+      }
+
       const projectUUID = config?.projectUUID ?? link?.projectUUID
       if (projectUUID) environmentByApplication = await mapEnvironments(projectUUID)
       let projects: ApplicationsProjectPayload[] | undefined
       let configFile = config?.file
+      let databases: DatabaseStatusPayload[] = []
       if (mode === "project" && projectUUID) {
         // Applications do not report a usable `project_uuid`, so the project is
         // read through its environments instead. Filtering the flat
@@ -723,6 +811,7 @@ export default Plugin.define({
         await Promise.all(
           members.slice(0, 20).map((member) => describe(apps, member.name, member.uuid, undefined, false)),
         )
+        databases = await buildDatabaseRows(config, projectUUID)
       } else if (recursiveProjects) {
         // Opt-in: a repository can hold several configs, so discover them all
         // from the repository root and render one section per group.
@@ -741,18 +830,22 @@ export default Plugin.define({
               : { environmentName: projectConfig.environmentName }),
             configFile: projectConfig.file,
             apps: await buildRows(projectConfig, projectConfig.file === config?.file),
+            databases: await buildDatabaseRows(projectConfig, projectConfig.projectUUID),
           })),
         )
         const selectedProject = projects.find((entry) => entry.file === config?.file) ?? projects[0]
         if (selectedProject) {
           configFile = selectedProject.file
           apps.push(...selectedProject.apps)
+          databases = [...selectedProject.databases]
         } else {
           // No config anywhere: keep the pinned-application fallback.
           apps.push(...(await buildRows(config, true)))
+          databases = await buildDatabaseRows(config, projectUUID)
         }
       } else {
         apps.push(...(await buildRows(config, true)))
+        databases = await buildDatabaseRows(config, projectUUID)
       }
 
       return {
@@ -766,6 +859,7 @@ export default Plugin.define({
         refreshSeconds,
         recursiveProjects,
         apps,
+        databases,
         ...(projects && projects.length > 0 ? { projects } : {}),
         capabilities: capabilitiesPayload(),
       }
@@ -964,4 +1058,14 @@ function normalizeOrUndefined(raw: string | undefined): string | undefined {
 
 function optionalString<Key extends string>(key: Key, value: unknown): Record<Key, string> | Record<string, never> {
   return typeof value === "string" && value !== "" ? ({ [key]: value } as Record<Key, string>) : {}
+}
+
+/** A stable key for a discovered database, in the config map's style. */
+function databaseSlug(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug === "" ? "database" : slug
 }

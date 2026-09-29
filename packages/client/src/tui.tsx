@@ -14,6 +14,7 @@ import {
   type AppStatusPayload,
   type CapabilitiesPayload,
   type CandidatePayload,
+  type DatabaseStatusPayload,
   type ResolvePayload,
 } from "@skyvence/coolify-oc-shared/rpc"
 
@@ -65,7 +66,10 @@ export type LineTone = RuntimeTone | "muted"
 /** What the mounted sidebar exposes back to the plugin. */
 interface SidebarControls {
   readonly refresh: () => void
+  /** Follow an application back up after the sidebar restarted it. */
   readonly markStarting: (applicationUUID: string) => void
+  /** The same, for a database's start or restart. */
+  readonly markStartingDatabase: (databaseUUID: string) => void
   /** Drives the sidebar's loading indicator during a show-all fetch. */
   readonly setBusy: (value: boolean) => void
 }
@@ -569,6 +573,50 @@ export default Plugin.define({
     }
 
     /**
+     * Database lifecycle. Databases have no logs or rollback in the API, so the
+     * only actions are start, stop and restart — all through the same `deploy`
+     * RPC, which routes a `databaseUUID` to the database endpoints.
+     */
+    async function openDatabaseActions(database: DatabaseStatusPayload): Promise<void> {
+      const choice = await context.ui.dialog.select<string>({
+        title: database.name,
+        options: [
+          { title: "Restart", value: "restart" },
+          { title: "Start", value: "start" },
+          { title: "Stop", value: "stop" },
+        ],
+      })
+      if (!choice) return
+      if (!database.databaseUUID) {
+        toast(`Coolify never resolved a UUID for ${database.name}, so it cannot be controlled from here.`, "warning")
+        return
+      }
+
+      const verb = choice === "restart" ? "Restart" : choice === "start" ? "Start" : "Stop"
+      const confirmed = await context.ui.dialog.confirm({
+        title: `${verb} ${database.name}`,
+        message: `${verb} ${database.name} on Coolify?`,
+        label: { confirm: verb, cancel: "Cancel" },
+      })
+      if (!confirmed) return
+
+      try {
+        const result = (await rpc.deploy({
+          action: choice,
+          databaseUUID: database.databaseUUID,
+          wait: false,
+        })) as { message?: string }
+        // Start and restart come back up; a stop is deliberately not followed,
+        // so no spinner claims it is returning.
+        if (choice !== "stop") sidebarControls?.markStartingDatabase(database.databaseUUID)
+        sidebarControls?.refresh()
+        toast(result.message ?? `${verb} requested.`, "success")
+      } catch (cause) {
+        toast(`Coolify: ${message(cause)}`, "error")
+      }
+    }
+
+    /**
      * Every application in the project, for when the sidebar list is truncated
      * or an app is not linked to this repository yet.
      */
@@ -651,6 +699,7 @@ export default Plugin.define({
           context={context}
           sessionID={input.sessionID}
           onAppActions={openAppActions}
+          onDatabaseActions={openDatabaseActions}
           onAllApps={() => openAllApps(sessionDirectory())}
           onConfigure={() => void openConfigure(sessionDirectory())}
           onLinkFirst={() => linkFirst(sessionDirectory())}
@@ -675,6 +724,7 @@ function CoolifySidebar(props: {
   context: PluginContext
   sessionID: string
   onAppActions: (app: AppStatusPayload) => Promise<void>
+  onDatabaseActions: (database: DatabaseStatusPayload) => Promise<void>
   onAllApps: () => Promise<void>
   onConfigure: () => void
   onLinkFirst: () => Promise<void>
@@ -693,17 +743,21 @@ function CoolifySidebar(props: {
   const [remaining, setRemaining] = createSignal(REFRESH_SECONDS_IDLE)
   const [frame, setFrame] = createSignal(0)
   const [starting, setStarting] = createSignal<readonly StartingUp[]>([])
+  const [startingDatabases, setStartingDatabases] = createSignal<readonly StartingUp[]>([])
   let inFlight: Promise<void> | undefined
   let debounce: ReturnType<typeof setTimeout> | undefined
   /** The rows from the previous poll, used to spot a restart we did not trigger. */
   let previousRows: readonly AppStatusPayload[] = []
+  let previousDatabaseRows: readonly DatabaseStatusPayload[] = []
 
   // `rows` feeds the countdown's active-deployment check; grouping only
   // affects what is drawn, not when the sidebar refreshes.
   const rows = createMemo(() => (data()?.apps ?? []).slice(0, MAX_ROWS))
   const idleSeconds = (): number => data()?.refreshSeconds ?? REFRESH_SECONDS_IDLE
   const isStarting = (app: AppStatusPayload): boolean =>
-    starting().some((entry) => entry.applicationUUID === app.applicationUUID)
+    starting().some((entry) => entry.id === app.applicationUUID)
+  const isDatabaseStarting = (database: DatabaseStatusPayload): boolean =>
+    startingDatabases().some((entry) => entry.id === database.databaseUUID)
   const groups = createMemo(() => applicationGroups(data()))
   const configureVisible = createMemo(() => shouldShowConfigure(data()))
 
@@ -745,13 +799,24 @@ function CoolifySidebar(props: {
           ...(base === undefined ? {} : { directory: base }),
         }, base)) as ApplicationsPayload
         const nextRows = payload.apps ?? []
+        const nextDatabaseRows = payload.databases ?? []
         cadence = payload.refreshSeconds ?? REFRESH_SECONDS_IDLE
-        const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, Date.now(), STARTING_TIMEOUT_MS)
+        const now = Date.now()
+        const nextStarting = reconcileStartingUp(starting(), previousRows, nextRows, now, STARTING_TIMEOUT_MS)
+        const nextStartingDatabases = reconcileStartingDatabases(
+          startingDatabases(),
+          previousDatabaseRows,
+          nextDatabaseRows,
+          now,
+          STARTING_TIMEOUT_MS,
+        )
         previousRows = nextRows
+        previousDatabaseRows = nextDatabaseRows
         setStarting(nextStarting)
+        setStartingDatabases(nextStartingDatabases)
         setData(payload)
         setFailed(false)
-        cadence = refreshSeconds(nextRows, cadence, nextStarting)
+        cadence = refreshSeconds(nextRows, cadence, nextStarting, nextStartingDatabases)
       } catch {
         setFailed(true)
       } finally {
@@ -782,6 +847,8 @@ function CoolifySidebar(props: {
       refresh: () => void load(),
       markStarting: (applicationUUID) =>
         setStarting((existing) => markStartingUp(existing, applicationUUID, Date.now())),
+      markStartingDatabase: (databaseUUID) =>
+        setStartingDatabases((existing) => markStartingUp(existing, databaseUUID, Date.now())),
       setBusy,
     })
     // Every listener debounces. `project.changed` matters most: without it a
@@ -809,7 +876,7 @@ function CoolifySidebar(props: {
 
   // Spinner frames run while a request is in flight or a row is coming back up.
   createEffect(() => {
-    if (!busy() && starting().length === 0) return
+    if (!busy() && starting().length === 0 && startingDatabases().length === 0) return
     const id = setInterval(() => setFrame((value) => value + 1), 100)
     onCleanup(() => clearInterval(id))
   })
@@ -853,7 +920,8 @@ function CoolifySidebar(props: {
         {noDirectory() ? "no project directory" : abbreviatePath(directory() ?? "project unknown")}
       </text>
 
-      {/* Applications: status light, name, state. One section per config. */}
+      {/* Applications, then databases: status light, name, state. One section
+          per config. */}
       <box border={["top"]} borderColor={theme().muted} flexDirection="column">
         <For each={groups()}>
           {(group, groupIndex) => (
@@ -937,6 +1005,56 @@ function CoolifySidebar(props: {
                   >
                     link
                   </text>
+                </box>
+              </Show>
+
+              {/* Databases live in their own section below the applications.
+                  They are attributed through the project's environment ids,
+                  since the API does not report a database's project directly. */}
+              <Show when={group.databases.length > 0}>
+                <box flexDirection="column">
+                  <text fg={theme().muted} wrapMode="none" truncate>
+                    databases
+                  </text>
+                  <For each={group.databases.slice(0, MAX_ROWS)}>
+                    {(database, index) => {
+                      const key = `db:${groupIndex()}:${index()}`
+                      return (
+                        <box
+                          flexDirection="row"
+                          gap={1}
+                          backgroundColor={hover() === key ? surface().raised?.high : undefined}
+                          onMouseOver={() => setHover(key)}
+                          onMouseOut={() => setHover(null)}
+                          onMouseUp={() => void props.onDatabaseActions(database)}
+                        >
+                          <Show
+                            when={isDatabaseStarting(database)}
+                            fallback={
+                              <text fg={toneColour(theme(), databaseRowTone(database))}>
+                                {statusLight(databaseRowTone(database))}
+                              </text>
+                            }
+                          >
+                            <text fg={theme().feedback.info?.base ?? theme().base}>
+                              {SPINNER[frame() % SPINNER.length]}
+                            </text>
+                          </Show>
+                          <text fg={theme().base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                            {database.name}
+                          </text>
+                          <text fg={theme().muted} wrapMode="none" flexShrink={0}>
+                            {databaseRowState(database)}
+                          </text>
+                        </box>
+                      )
+                    }}
+                  </For>
+                  <Show when={group.databases.length > MAX_ROWS}>
+                    <text fg={theme().muted} wrapMode="none" truncate>
+                      {`+${group.databases.length - MAX_ROWS} more`}
+                    </text>
+                  </Show>
                 </box>
               </Show>
             </box>
@@ -1268,16 +1386,17 @@ export function shouldShowConfigure(payload: ApplicationsPayload | undefined): b
   return !isLinked(payload)
 }
 
-/** A restarted application the sidebar should mark as coming back up. */
+/** A restarted application or database the sidebar should mark as coming back up. */
 export interface StartingUp {
-  readonly applicationUUID: string
+  /** The application or database UUID the row is tracked by. */
+  readonly id: string
   /** When the restart was noticed (detected or triggered locally). */
   readonly startedAt: number
 }
 
 /**
- * Whether a row looks mid-restart: a container in a transitional state, or a
- * deployment that has been queued or is running.
+ * Whether an application row looks mid-restart: a container in a transitional
+ * state, or a deployment that has been queued or is running.
  */
 export function isStartingSignal(app: AppStatusPayload): boolean {
   const state = app.runtime?.state
@@ -1293,25 +1412,81 @@ function wasUp(app: AppStatusPayload): boolean {
   return normalizeDeploymentStatus(app.latestDeployment?.status) === "finished"
 }
 
-/** Mark an application as starting up because the sidebar itself restarted it. */
+/**
+ * Whether a database row looks mid-restart. Databases have no deployment
+ * queue, so this is the container state alone.
+ */
+export function isDatabaseStartingSignal(database: DatabaseStatusPayload): boolean {
+  const state = database.runtime?.state
+  return state === "starting" || state === "restarting" || state === "exited"
+}
+
+/** The previous poll showed the database up, so a change is a restart. */
+function wasDatabaseUp(database: DatabaseStatusPayload): boolean {
+  return database.runtime?.state === "running" || database.runtime?.health === "healthy"
+}
+
+/** Mark a resource as starting up because the sidebar itself restarted it. */
 export function markStartingUp(
   existing: readonly StartingUp[],
-  applicationUUID: string,
+  id: string,
   now: number,
 ): readonly StartingUp[] {
-  if (existing.some((entry) => entry.applicationUUID === applicationUUID)) return existing
-  return [...existing, { applicationUUID, startedAt: now }]
+  if (existing.some((entry) => entry.id === id)) return existing
+  return [...existing, { id, startedAt: now }]
 }
 
 /**
- * Which applications are starting up, given the last two polls and the set
+ * Which tracked rows are starting up, given the last two polls and the set
  * already being followed.
  *
  * A row enters the set when the previous poll showed it up and this one shows a
  * restart signal — including restarts the plugin never triggered, such as a
  * change made in the Coolify UI. It leaves once the signal is gone and the
  * minimum spin has elapsed, or after the timeout, so it can never spin forever.
+ *
+ * Applications and databases reconcile separately, so an id only has to be
+ * unique within its own list; this is the shared body.
  */
+function reconcileRestarts<Row>(
+  existing: readonly StartingUp[],
+  previous: readonly Row[],
+  next: readonly Row[],
+  now: number,
+  timeoutMs: number,
+  identify: (row: Row) => string | undefined,
+  isSignal: (row: Row) => boolean,
+  isUp: (row: Row) => boolean,
+): readonly StartingUp[] {
+  const previousById = new Map<string, Row>()
+  for (const row of previous) {
+    const id = identify(row)
+    if (id !== undefined) previousById.set(id, row)
+  }
+  const existingById = new Map(existing.map((entry) => [entry.id, entry]))
+  const result: StartingUp[] = []
+
+  for (const row of next) {
+    const id = identify(row)
+    if (id === undefined) continue
+    const held = existingById.get(id)
+    const signal = isSignal(row)
+    if (held) {
+      if (now - held.startedAt >= timeoutMs) continue
+      if (signal || now - held.startedAt < STARTING_MIN_SPIN_MS) result.push(held)
+      continue
+    }
+    const before = previousById.get(id)
+    // A resource that was never up cannot be "restarting" — it is simply
+    // stopped or never deployed, and should not claim a spinner.
+    if (before && isUp(before) && signal) {
+      result.push({ id, startedAt: now })
+    }
+  }
+
+  return result
+}
+
 export function reconcileStartingUp(
   existing: readonly StartingUp[],
   previous: readonly AppStatusPayload[],
@@ -1319,27 +1494,35 @@ export function reconcileStartingUp(
   now: number,
   timeoutMs: number = STARTING_TIMEOUT_MS,
 ): readonly StartingUp[] {
-  const previousById = new Map(previous.map((app) => [app.applicationUUID, app]))
-  const existingById = new Map(existing.map((entry) => [entry.applicationUUID, entry]))
-  const result: StartingUp[] = []
+  return reconcileRestarts(
+    existing,
+    previous,
+    next,
+    now,
+    timeoutMs,
+    (app) => app.applicationUUID,
+    isStartingSignal,
+    wasUp,
+  )
+}
 
-  for (const app of next) {
-    const held = existingById.get(app.applicationUUID)
-    const signal = isStartingSignal(app)
-    if (held) {
-      if (now - held.startedAt >= timeoutMs) continue
-      if (signal || now - held.startedAt < STARTING_MIN_SPIN_MS) result.push(held)
-      continue
-    }
-    const before = previousById.get(app.applicationUUID)
-    // An application that was never up cannot be "restarting" — it is simply
-    // stopped or never deployed, and should not claim a spinner.
-    if (before && wasUp(before) && signal) {
-      result.push({ applicationUUID: app.applicationUUID, startedAt: now })
-    }
-  }
-
-  return result
+export function reconcileStartingDatabases(
+  existing: readonly StartingUp[],
+  previous: readonly DatabaseStatusPayload[],
+  next: readonly DatabaseStatusPayload[],
+  now: number,
+  timeoutMs: number = STARTING_TIMEOUT_MS,
+): readonly StartingUp[] {
+  return reconcileRestarts(
+    existing,
+    previous,
+    next,
+    now,
+    timeoutMs,
+    (database) => database.databaseUUID,
+    isDatabaseStartingSignal,
+    wasDatabaseUp,
+  )
 }
 
 /**
@@ -1352,13 +1535,16 @@ export function refreshSeconds(
   apps: readonly AppStatusPayload[],
   idleSeconds: number = REFRESH_SECONDS_IDLE,
   starting: readonly StartingUp[] = [],
+  startingDatabases: readonly StartingUp[] = [],
 ): number {
-  const startingIDs = new Set(starting.map((entry) => entry.applicationUUID))
-  const active = apps.some((app) => {
-    if (startingIDs.has(app.applicationUUID)) return true
-    const status = normalizeDeploymentStatus(app.latestDeployment?.status)
-    return status === "queued" || status === "in_progress"
-  })
+  const startingIDs = new Set(starting.map((entry) => entry.id))
+  const active =
+    startingDatabases.length > 0 ||
+    apps.some((app) => {
+      if (startingIDs.has(app.applicationUUID)) return true
+      const status = normalizeDeploymentStatus(app.latestDeployment?.status)
+      return status === "queued" || status === "in_progress"
+    })
   return active ? activeCadence(idleSeconds) : idleSeconds
 }
 
@@ -1379,6 +1565,8 @@ export interface ApplicationGroupView {
   readonly heading?: string
   readonly configFile?: string
   readonly apps: readonly AppStatusPayload[]
+  /** Databases the same config maps, in map order. */
+  readonly databases: readonly DatabaseStatusPayload[]
   /** The same applications, split by environment, in first-seen order. */
   readonly environments: readonly ApplicationEnvironmentView[]
 }
@@ -1440,6 +1628,7 @@ export function applicationGroups(payload: ApplicationsPayload | undefined): rea
         ...(heading === undefined ? {} : { heading }),
         configFile: project.configFile,
         apps: project.apps,
+        databases: project.databases ?? [],
         environments: environmentGroups(project.apps),
       }
     })
@@ -1449,6 +1638,7 @@ export function applicationGroups(payload: ApplicationsPayload | undefined): rea
     {
       ...(payload?.configFile === undefined ? {} : { configFile: payload.configFile }),
       apps,
+      databases: payload?.databases ?? [],
       environments: environmentGroups(apps),
     },
   ]
@@ -1480,6 +1670,28 @@ export function appRowState(app: AppStatusPayload): string {
 /** The full, unabbreviated form, for dialogs and tool output. */
 export function appRowLabel(app: AppStatusPayload): string {
   return `${app.name} · ${appRowState(app)}`
+}
+
+/** A database's status light, derived from the same runtime vocabulary. */
+export function databaseRowTone(database: DatabaseStatusPayload): LineTone {
+  return database.runtime ? runtimeTone(database.runtime) : "unknown"
+}
+
+/**
+ * The compact state shown at the right of a database row. With no runtime —
+ * a config entry that could not be resolved, or a failed fetch — the type is
+ * more use than the word "unknown".
+ */
+export function databaseRowState(database: DatabaseStatusPayload): string {
+  if (database.runtime) {
+    return database.runtime.health === "unhealthy" ? `${database.runtime.state} !` : database.runtime.state
+  }
+  return database.type ?? "unknown"
+}
+
+/** The full, unabbreviated form, for dialogs and tool output. */
+export function databaseRowLabel(database: DatabaseStatusPayload): string {
+  return `${database.name} · ${databaseRowState(database)}`
 }
 
 export function statusLight(tone: LineTone): string {
