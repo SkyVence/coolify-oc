@@ -27,7 +27,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "coolify-install-tui": "./scripts/install-tui.mjs"
+    "coolify-install-tui": "scripts/install-tui.mjs"
   },
   "files": [
     "dist",
