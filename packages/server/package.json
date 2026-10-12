@@ -1,6 +1,6 @@
 {
   "name": "@skyvence/coolify-oc",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Deploy and configure projects on a self-hosted Coolify instance from OpenCode: model-facing tools plus a separately installed sidebar.",
   "license": "MIT",
   "type": "module",
@@ -43,8 +43,8 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.13",
-    "@opencode/schema": "2.0.13"
+    "@opencode/plugin": "2.0.27",
+    "@opencode/schema": "2.0.27"
   },
   "devDependencies": {
     "@skyvence/coolify-oc-shared": "*"

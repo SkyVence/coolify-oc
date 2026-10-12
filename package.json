@@ -12,11 +12,11 @@
     "build": "bun run --cwd packages/server build"
   },
   "devDependencies": {
-    "@opencode/client": "^2.0.13",
-    "@opencode/plugin": "2.0.13",
-    "@opencode/schema": "2.0.13",
-    "@opentui/core": "^0.5.12",
-    "@opentui/solid": "^0.5.12",
+    "@opencode/client": "^2.0.27",
+    "@opencode/plugin": "2.0.27",
+    "@opencode/schema": "2.0.27",
+    "@opentui/core": "^0.6.2",
+    "@opentui/solid": "^0.6.2",
     "@types/node": "^26.6.2",
     "solid-js": "^1.9.15",
     "typescript": "^5.9.0",
